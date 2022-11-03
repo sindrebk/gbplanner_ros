@@ -22,7 +22,7 @@ Gbplanner::Gbplanner(const ros::NodeHandle& nh,
                      const ros::NodeHandle& nh_private,
                      MapManagerVoxblox<MapManagerVoxbloxServer,
                                        MapManagerVoxbloxVoxel>* map_manager)
-    : nh_(nh), nh_private_(nh_private) {
+    : nh_(nh), nh_private_(nh_private), map_manager_(map_manager){
   
   planner_status_ = Gbplanner::PlannerStatus::NOT_READY;
   rrg_ = new Rrg(nh, nh_private, map_manager);
@@ -83,6 +83,9 @@ void Gbplanner::initializeAttributes() {
   untraversable_polygon_subscriber_ =
       nh_.subscribe("/traversability_estimation/untraversable_polygon", 100,
                     &Gbplanner::untraversablePolygonCallback, this);
+
+  bounded_box_subscriber = nh_.subscribe("bounded_box",1, &GBplanner::bounded_box_callback, this);
+
 }
 
 bool Gbplanner::plannerGotoWaypointCallback(
@@ -364,6 +367,16 @@ Gbplanner::PlannerStatus Gbplanner::getPlannerStatus() {
     return Gbplanner::PlannerStatus::READY;
 
   return Gbplanner::PlannerStatus::READY;
+}
+void GBplanner::bounded_box_callback(const vision_msgs::Detection2DArray& detections) {
+  Eigen::Vector3d end_voxel;
+  double tsdf_dist;
+  for (const Detection2D detection : detections) {
+    MapManager::VoxelStatus vs = map_manager_->getRayStatus(
+    const Eigen::Vector3d& view_point, detection.results.pose.pose.position,
+    true, end_voxel,
+    tsdf_dist)
+  }  
 }
 
 }  // namespace explorer

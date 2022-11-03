@@ -53,6 +53,7 @@ class Gbplanner {
 
   Rrg* rrg_;
 
+
  private:
   ros::NodeHandle nh_;
   ros::NodeHandle nh_private_;
@@ -80,6 +81,7 @@ class Gbplanner {
   ros::ServiceClient map_save_service_;
 
   PlannerStatus planner_status_;
+  MapManagerVoxblox<MapManagerVoxbloxServer, MapManagerVoxbloxVoxel>* map_manager_;
 
   bool homingServiceCallback(planner_msgs::planner_homing::Request& req,
                              planner_msgs::planner_homing::Response& res);
@@ -134,6 +136,8 @@ class Gbplanner {
   void robotStatusCallback(const planner_msgs::RobotStatus& status);
 
   Gbplanner::PlannerStatus getPlannerStatus();
+
+  void bounded_box_callback(const vision_msgs::Detection2DArray& detections);
 };
 
 }  // namespace explorer
