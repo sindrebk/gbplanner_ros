@@ -204,6 +204,8 @@ class MapManagerVoxblox : MapManager {
   }
 
   void setRobotRadius(double robot_radius) { robot_radius_ = robot_radius; }
+  
+  voxblox::Layer<SDFVoxelType>* getSDFLayer();
 
  private:
   VoxelStatus getBoxStatusInVoxels(
@@ -211,7 +213,6 @@ class MapManagerVoxblox : MapManager {
       const voxblox::AnyIndex& bounding_box_voxels,
       bool stop_at_unknown_voxel) const;
 
-  voxblox::Layer<SDFVoxelType>* getSDFLayer();
   bool checkUnknownStatus(const SDFVoxelType*) const;
   void clearIfUnknown(SDFVoxelType& voxel);
 

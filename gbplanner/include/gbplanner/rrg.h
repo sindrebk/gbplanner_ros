@@ -12,6 +12,9 @@
 #include <geometry_msgs/PointStamped.h>
 #include <geometry_msgs/Polygon.h>
 #include <geometry_msgs/PolygonStamped.h>
+#include <geometry_msgs/PoseWithCovarianceStamped.h>
+#include <vision_msgs/Detection2DArray.h>
+#include <vision_msgs/Detection2D.h>
 #include <kdtree/kdtree.h>
 #include <pcl/common/distances.h>
 #include <pcl/filters/crop_box.h>

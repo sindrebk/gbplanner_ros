@@ -26,6 +26,7 @@
 #include "planner_msgs/planner_srv.h"
 #include "planner_msgs/planner_string_trigger.h"
 
+
 namespace explorer {
 
 class Gbplanner {
