@@ -85,6 +85,8 @@ void Rrg::initializeAttributes() {
       nh_.createTimer(ros::Duration(kFreePointCloudUpdatePeriod),
                       &Rrg::freePointCloudtimerCallback, this);
 
+  bounded_box_subscriber_ = nh_.subscribe("bounded_box",1, &GBplanner::bounded_box_callback, this);
+  
   // FIX-ME
   semantics_subscriber_ =
       nh_.subscribe("semantic_location", 100, &Rrg::semanticsCallback, this);
@@ -5541,6 +5543,32 @@ bool RobotStateHistory::getNearestStateInRange(const StateVec* state,
   kd_res_free(nearest);
   if (dist.norm() > range) return false;
   return true;
+}
+
+void Rrg::bounded_box_callback(const vision_msgs::Detection2DArray& detections) {
+
+  voxblox::Layer<MapManagerVoxbloxVoxel> sdf_layer_* = getSDFLayer();
+  const float voxel_size = sdf_layer_->voxel_size();
+  const float voxel_size_inv = 1.0 / voxel_size;
+  Eigen::Vector3d end_voxel;
+  double tsdf_dist;
+
+  for (const Detection2D detection : detections) {
+    MapManager::VoxelStatus vs = map_manager_->getRayStatus(
+    const Eigen::Vector3d& view_point, detection.results.pose.pose.position,
+    true, end_voxel,
+    tsdf_dist)
+
+    voxblox::LongIndex center_voxel_index =
+        voxblox::getGridIndexFromPoint<voxblox::LongIndex>(
+            end_voxel.cast<voxblox::FloatingPoint>(), voxel_size_inv);
+    MapManagerVoxbloxVoxel* voxel =
+        sdf_layer_->getVoxelPtrByGlobalIndex(center_voxel_index);
+
+    voxel->label = std::static_cast<uint8_t>(detection.results.id);
+  }
+
+
 }
 
 }  // namespace explorer

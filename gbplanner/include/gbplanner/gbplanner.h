@@ -81,7 +81,6 @@ class Gbplanner {
   ros::ServiceClient map_save_service_;
 
   PlannerStatus planner_status_;
-  MapManagerVoxblox<MapManagerVoxbloxServer, MapManagerVoxbloxVoxel>* map_manager_;
 
   bool homingServiceCallback(planner_msgs::planner_homing::Request& req,
                              planner_msgs::planner_homing::Response& res);
@@ -137,7 +136,6 @@ class Gbplanner {
 
   Gbplanner::PlannerStatus getPlannerStatus();
 
-  void bounded_box_callback(const vision_msgs::Detection2DArray& detections);
 };
 
 }  // namespace explorer

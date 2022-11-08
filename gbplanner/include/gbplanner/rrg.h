@@ -94,6 +94,8 @@ class Rrg {
   // Clear out old vertices from previous session.
   void clear();
 
+  void bounded_box_callback(const vision_msgs::Detection2DArray& detections); // Henrik
+
   // Sample points and construct a graph.
   GraphStatus buildGraph();
   GraphStatus buildGridGraph(StateVec state, Eigen::Vector3d robot_size,
@@ -278,6 +280,7 @@ class Rrg {
 
   ros::Subscriber semantics_subscriber_;
   ros::Subscriber stop_srv_subscriber_;
+  ros::Subscriber bounded_box_subscriber_;
 
   ros::ServiceClient pci_homing_;
   ros::ServiceClient landing_srv_client_;
