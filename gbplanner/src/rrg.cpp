@@ -5545,7 +5545,7 @@ bool RobotStateHistory::getNearestStateInRange(const StateVec* state,
   return true;
 }
 
-void Rrg::bounded_box_callback(const vision_msgs::Detection2DArray& detections) {
+void Rrg::detectionsCallback(const vision_msgs::Detection2DArray& detections) {
 
   voxblox::Layer<MapManagerVoxbloxVoxel>* sdf_layer_ = map_manager_->getSDFLayer();
   const float voxel_size = sdf_layer_->voxel_size();
@@ -5570,6 +5570,7 @@ void Rrg::bounded_box_callback(const vision_msgs::Detection2DArray& detections) 
         sdf_layer_->getVoxelPtrByGlobalIndex(center_voxel_index);
 
     voxel->label = static_cast<uint8_t>(detection.results[0].id);
+    ROS_INFO("Label: %d", voxel->label);
   }
 
 

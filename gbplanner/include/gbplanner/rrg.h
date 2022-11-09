@@ -97,7 +97,7 @@ class Rrg {
   // Clear out old vertices from previous session.
   void clear();
 
-  void bounded_box_callback(const vision_msgs::Detection2DArray& detections); // Henrik
+  void detectionsCallback(const vision_msgs::Detection2DArray& detections); // Henrik
 
   // Sample points and construct a graph.
   GraphStatus buildGraph();
