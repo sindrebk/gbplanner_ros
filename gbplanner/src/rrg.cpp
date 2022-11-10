@@ -5570,7 +5570,9 @@ void Rrg::detectionsCallback(const vision_msgs::Detection2DArray& detections) {
         sdf_layer_->getVoxelPtrByGlobalIndex(center_voxel_index);
 
     voxel->label = static_cast<uint8_t>(detection.results[0].id);
+    voxel->num_detections++;
     ROS_INFO("Label: %d", voxel->label);
+    ROS_INFO("Num detections: %d", voxel->num_detections);
   }
 
 
