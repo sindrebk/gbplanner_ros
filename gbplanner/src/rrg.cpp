@@ -5639,7 +5639,7 @@ void Rrg::detectionsCallback(const vision_msgs::Detection2DArrayConstPtr detecti
         // avoid this by checking if the area of the region of interest is
         // greater than zero
         if (roi.area() < 256) continue;
-        
+
         Eigen::Vector3d end_point = estimate_position(*cv_depth_image, roi);
         MapManager::VoxelStatus vs = map_manager_->getRayStatus(
                                             view_point, end_point,
@@ -5653,6 +5653,11 @@ void Rrg::detectionsCallback(const vision_msgs::Detection2DArrayConstPtr detecti
 
         voxel->label = static_cast<uint8_t>(detection.results[0].id);
         voxel->num_observations++;
+
+        std::size_t hash = std::hash<voxblox::LongIndex>()(center_voxel_index);
+        if(voxels_with_detections.count(hash) == 0){
+          voxels_with_detections.insert({hash, end_voxel});
+        }
         ROS_INFO("Label: %d", voxel->label);
         ROS_INFO("Num detections: %d", voxel->num_observations);
       }
