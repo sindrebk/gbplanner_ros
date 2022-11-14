@@ -5609,12 +5609,18 @@ void Rrg::boundingBoxCallback(const vision_msgs::Detection2DArrayConstPtr detect
 } // boundingBoxCallback
 
 void Rrg::detectionsCallback(const vision_msgs::Detection2DArrayConstPtr detections_msg,
-                        const sensor_msgs::ImageConstPtr depth_image){
+                        const sensor_msgs::ImageConstPtr depth_image_msg){
     
     // Either no detections or no camera info message received
     if (detections_msg->detections.empty() || !depth_camera_model.initialized()) return;
-
+    
+    auto cv_depth_image = std::make_shared<cv::Mat>(depth_image_msg->height, 
+                                                    depth_image_msg->width, 
+                                                    CV_16UC1, 
+                                                    (void*)depth_image_msg->data.data()
+                                                    );
     std_msgs::Header header_in{detections_msg->header};
+
     voxblox::Layer<MapManagerVoxbloxVoxel>* sdf_layer_ = map_manager_->getSDFLayer();
     const float voxel_size = sdf_layer_->voxel_size();
     const float voxel_size_inv = 1.0 / voxel_size;
@@ -5627,7 +5633,13 @@ void Rrg::detectionsCallback(const vision_msgs::Detection2DArrayConstPtr detecti
     for(vision_msgs::Detection2D detection : detections_msg->detections){
       bbox_msg = detection.bbox;
       for(vision_msgs::BoundingBox2D bbox : splitBbox(bbox_msg)){
-        cv::Rect roi = to_roi(*depth_image, detection.bbox, cv::Point2i(offset, 0));
+        cv::Rect roi = to_roi(*cv_depth_image, detection.bbox);
+        // If we try to crop an image using a region of interest that has
+        // width or height equal to zero openCV will throw a runtime error,
+        // avoid this by checking if the area of the region of interest is
+        // greater than zero
+        if (roi.area() < 256) continue;
+
       }
     }
 } // detectionsCallback
@@ -5652,6 +5664,44 @@ std::vector<vision_msgs::BoundingBox2D> Rrg::splitBbox(const vision_msgs::Boundi
   }
   return bboxes;
 } //splitBbox
+
+cv::Rect Rrg::to_roi(const cv::Mat &image, const vision_msgs::BoundingBox2D &bbox){
+    cv::Point tl(
+        boost::algorithm::clamp(static_cast<int>(bbox.center.x - bbox.size_x/2), 0, image.cols-1),
+        boost::algorithm::clamp(static_cast<int>(bbox.center.y - bbox.size_y/2), 0, image.rows-1)
+    );
+
+    cv::Point br(
+        boost::algorithm::clamp(static_cast<int>(bbox.center.x + bbox.size_x/2), tl.x, image.cols-1),
+        boost::algorithm::clamp(static_cast<int>(bbox.center.y + bbox.size_y/2), tl.y, image.rows-1)
+    );
+
+    cv::Rect roi(
+        tl.x,
+        tl.y,
+        br.x - tl.x,
+        br.y - tl.y
+    );
+
+    return roi;
+}
+
+Eigen::Vector3d Rrg::estimate_position(const cv::Mat &depth_image,
+                                   const cv::Rect roi
+                                  ) const{
+    cv::Mat cropped_image{roi.height, roi.width, CV_16UC1, cv::Scalar{0}};
+    depth_image(roi).copyTo(cropped_image);
+    cv::Mat mask;
+    cropped_image.convertTo(mask, CV_8UC1);
+
+    cv::Point2d main_pixel(roi.x + roi.width/2, roi.y + roi.height/2);
+    cv::Scalar distance, std_dev;
+    cv::meanStdDev(depth_image, distance, std_dev, mask);
+    
+    cv::Point3d position_cv = depth_camera_model.projectPixelTo3dRay(main_pixel) * (distance[0] / 1000);
+    Eigen::Vector3d position(position_cv.x, position_cv.y, position_cv.z);
+    return position;
+}
 
 
 void Rrg::depthCameraInfoCallback(sensor_msgs::CameraInfoConstPtr depth_camera_info_msg)

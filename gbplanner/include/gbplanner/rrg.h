@@ -8,6 +8,7 @@
 #include <numeric>
 #include <unordered_map>
 
+#include <boost/algorithm/clamp.hpp>
 #include <eigen3/Eigen/Dense>
 #include <geometry_msgs/PointStamped.h>
 #include <geometry_msgs/Polygon.h>
@@ -280,8 +281,15 @@ class Rrg {
   void computeVolumetricGainRayModelNoBound(StateVec& state,
                                             VolumetricGain& vgain);
 
+
   void evaluateShortestPaths();
 
+  cv::Rect to_roi(const cv::Mat &image, 
+                       const vision_msgs::BoundingBox2D &bbox);
+
+
+  Eigen::Vector3d estimate_position(const cv::Mat &depth_image,
+                                             const cv::Rect roi) const;
   // Add frontiers from the local graph to the global graph
   void addFrontiers(int best_vertex_id);
 
