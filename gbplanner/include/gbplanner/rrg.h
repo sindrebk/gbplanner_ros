@@ -322,7 +322,8 @@ class Rrg {
   ShortestPathsReport global_graph_rep_;  // shortest path to root vertex
   std::vector<std::vector<double>> edge_inclinations_;
 
-  
+  std::map< uint8_t, std::map<std::hash<voxblox::GlobalIndex>, Eigen::Vector3d> > voxels_with_detections;
+
   // Add a collision-free path to the graph.
   bool addRefPathToGraph(const std::shared_ptr<GraphManager> graph_manager,
                          const std::vector<Vertex*>& vertices);
