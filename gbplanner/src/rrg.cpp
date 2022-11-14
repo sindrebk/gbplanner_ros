@@ -85,7 +85,34 @@ void Rrg::initializeAttributes() {
       nh_.createTimer(ros::Duration(kFreePointCloudUpdatePeriod),
                       &Rrg::freePointCloudtimerCallback, this);
 
-  bounded_box_subscriber_ = nh_.subscribe("bounded_box",1, &Rrg::bounded_box_callback, this);
+  // Detections subscribers and syncronizer
+  bounded_box_subscriber_ = nh_.subscribe("/yolo/detections",1, &Rrg::boundingBoxCallback, this);
+
+  depth_camera_info_subscriber_ = std::make_unique<ros::Subscriber>(nh_.subscribe(
+      "/camera/depth/depth_camera_info", 
+      10, 
+      &Rrg::depthCameraInfoCallback, 
+      this
+      )
+  );
+
+  detections_subscriber_ = std::make_unique<message_filters::Subscriber<vision_msgs::Detection2DArray> >(
+      nh_,
+      "/camera/depth/image_raw",
+      10
+  );
+  depth_image_subscriber_ = std::make_unique<message_filters::Subscriber<sensor_msgs::Image> >(
+      nh_,
+      "/yolo/detections",
+      10
+  );
+  sync_ = std::make_unique<message_filters::Synchronizer<DepthDetectionSyncPolicy> >(
+      DepthDetectionSyncPolicy(100),
+      *detections_subscriber_,
+      *depth_image_subscriber_
+  );
+
+  sync_->registerCallback(boost::bind(&Rrg::detectionsCallback, this, _1, _2));
   
   // FIX-ME
   semantics_subscriber_ =
@@ -5545,7 +5572,9 @@ bool RobotStateHistory::getNearestStateInRange(const StateVec* state,
   return true;
 }
 
-void Rrg::detectionsCallback(const vision_msgs::Detection2DArray& detections) {
+void Rrg::boundingBoxCallback(const vision_msgs::Detection2DArrayConstPtr detections_msg) {
+  // Either no detections or no camera info message received
+  if (detections_msg->detections.empty() || !depth_camera_model.initialized()) return;
 
   voxblox::Layer<MapManagerVoxbloxVoxel>* sdf_layer_ = map_manager_->getSDFLayer();
   const float voxel_size = sdf_layer_->voxel_size();
@@ -5554,14 +5583,14 @@ void Rrg::detectionsCallback(const vision_msgs::Detection2DArray& detections) {
   Eigen::Vector3d end_voxel;
   double tsdf_dist;
 
-  for (const vision_msgs::Detection2D detection : detections.detections) {
+  for (const vision_msgs::Detection2D detection : detections_msg->detections) {
     geometry_msgs::Point end_point_msg = detection.results[0].pose.pose.position;
     Eigen::Vector3d end_point(end_point_msg.x, end_point_msg.y, end_point_msg.z);
   
     MapManager::VoxelStatus vs = map_manager_->getRayStatus(
-    view_point, end_point,
-    true, end_voxel,
-    tsdf_dist);
+                    view_point, end_point,
+                    true, end_voxel,
+                    tsdf_dist);
 
     voxblox::LongIndex center_voxel_index =
         voxblox::getGridIndexFromPoint<voxblox::LongIndex>(
@@ -5570,12 +5599,43 @@ void Rrg::detectionsCallback(const vision_msgs::Detection2DArray& detections) {
         sdf_layer_->getVoxelPtrByGlobalIndex(center_voxel_index);
 
     voxel->label = static_cast<uint8_t>(detection.results[0].id);
-    voxel->num_detections++;
+    voxel->num_observations++;
     ROS_INFO("Label: %d", voxel->label);
-    ROS_INFO("Num detections: %d", voxel->num_detections);
+    ROS_INFO("Num detections: %d", voxel->num_observations);
   }
+  // for detection in detections
 
 
-}
+} // boundingBoxCallback
+
+void Rrg::detectionsCallback(const vision_msgs::Detection2DArrayConstPtr detections_msg,
+                        const sensor_msgs::ImageConstPtr depth_image){
+    
+    // Either no detections or no camera info message received
+    if (detections_msg->detections.empty() || !depth_camera_model.initialized()) return;
+
+    std_msgs::Header header_in{detections_msg->header};
+    voxblox::Layer<MapManagerVoxbloxVoxel>* sdf_layer_ = map_manager_->getSDFLayer();
+    const float voxel_size = sdf_layer_->voxel_size();
+    const float voxel_size_inv = 1.0 / voxel_size;
+    Eigen::Vector3d view_point(current_state_[0], current_state_[1], current_state_[2]);
+    Eigen::Vector3d end_voxel;
+    double tsdf_dist;
+    vision_msgs::BoundingBox2D bbox_msg;
+    cv::Point2d test;
+
+    for(vision_msgs::Detection2D detection : detections_msg->detections){
+      bbox_msg = detection.bbox;
+    }
+} // detectionsCallback
+
+
+
+
+void Rrg::depthCameraInfoCallback(sensor_msgs::CameraInfoConstPtr depth_camera_info_msg)
+{
+    depth_camera_model.fromCameraInfo(depth_camera_info_msg);
+} // Depth camera info callback
+                  
 
 }  // namespace explorer
