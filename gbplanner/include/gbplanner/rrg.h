@@ -114,7 +114,7 @@ class Rrg {
   void depthCameraInfoCallback(sensor_msgs::CameraInfoConstPtr depth_camera_info_msg);
 
 
-
+  std::vector<vision_msgs::BoundingBox2D> splitBbox(const vision_msgs::BoundingBox2D bbox);
 
   // Sample points and construct a graph.
   GraphStatus buildGraph();

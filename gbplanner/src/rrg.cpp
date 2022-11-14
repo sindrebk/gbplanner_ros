@@ -5626,10 +5626,32 @@ void Rrg::detectionsCallback(const vision_msgs::Detection2DArrayConstPtr detecti
 
     for(vision_msgs::Detection2D detection : detections_msg->detections){
       bbox_msg = detection.bbox;
+      for(vision_msgs::BoundingBox2D bbox : splitBbox(bbox_msg)){
+        cv::Rect roi = to_roi(*depth_image, detection.bbox, cv::Point2i(offset, 0));
+      }
     }
 } // detectionsCallback
 
 
+std::vector<vision_msgs::BoundingBox2D> Rrg::splitBbox(const vision_msgs::BoundingBox2D bbox){
+  int h = bbox.size_x / 2;
+  int w = bbox.size_y / 2;
+  std::vector<vision_msgs::BoundingBox2D> bboxes;
+
+  for(int i : std::vector<int>(-1, 1)){
+    for(int j : std::vector<int>(-1, 1)){
+      vision_msgs::BoundingBox2D new_bbox;
+      geometry_msgs::Pose2D new_center;
+      new_center.x = bbox.center.x + i*h;
+      new_center.y = bbox.center.y + j*w;
+      new_bbox.center = new_center;
+      new_bbox.size_x = h;
+      new_bbox.size_y = w;
+      bboxes.push_back(new_bbox);
+    }
+  }
+  return bboxes;
+} //splitBbox
 
 
 void Rrg::depthCameraInfoCallback(sensor_msgs::CameraInfoConstPtr depth_camera_info_msg)
