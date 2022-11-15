@@ -117,6 +117,11 @@ MapManagerVoxblox<SDFServerType, SDFVoxelType>::getVoxelStatus(
   SDFVoxelType* voxel = sdf_layer_->getVoxelPtrByCoordinates(
       position.cast<voxblox::FloatingPoint>());
 
+  //Checkig if detected
+  if(voxel->label != 0){ //
+    return VoxelStatus::kDetected;
+  }
+
   if (checkUnknownStatus(voxel)) {
     return VoxelStatus::kUnknown;
   }
