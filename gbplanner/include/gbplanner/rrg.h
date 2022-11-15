@@ -56,6 +56,8 @@
 #include "planner_msgs/PlanningMode.h"
 #include "planner_msgs/planner_dynamic_global_bound.h"
 #include "planner_msgs/planner_srv.h"
+#include "planner_msgs/DetectedVoxelArray.h"
+#include "planner_msgs/DetectedVoxel.h"
 #include "planner_semantic_msgs/SemanticPoint.h"
 
 // Publish all gbplanner rviz topics or not.
@@ -305,6 +307,7 @@ class Rrg {
   ros::Publisher free_cloud_pub_;
   ros::Publisher time_log_pub_;
   ros::Publisher pci_reset_pub_;
+  ros::Publisher detected_location_pub_;
 
   ros::Subscriber semantics_subscriber_;
   ros::Subscriber stop_srv_subscriber_;
@@ -330,7 +333,7 @@ class Rrg {
   ShortestPathsReport global_graph_rep_;  // shortest path to root vertex
   std::vector<std::vector<double>> edge_inclinations_;
 
-  std::map<std::size_t, Eigen::Vector3d> voxels_with_detections;
+  std::map<std::size_t, std::pair<Eigen::Vector3d, uint16_t> > voxels_with_detections_; // Pair contains label and num_observations
 
   // Add a collision-free path to the graph.
   bool addRefPathToGraph(const std::shared_ptr<GraphManager> graph_manager,

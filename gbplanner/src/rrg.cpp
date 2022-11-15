@@ -72,6 +72,9 @@ void Rrg::initializeAttributes() {
   pci_reset_pub_ =
       nh_.advertise<std_msgs::Bool>("planner_control_interface/msg/reset", 10);
 
+  detected_location_pub_ = 
+      nh_.advertise<planner_msgs::DetectedVoxelArray>("detected_voxels", 10);
+
   //
   global_graph_update_timer_ =
       nh_.createTimer(ros::Duration(kGlobalGraphUpdateTimerPeriod),
@@ -98,7 +101,7 @@ void Rrg::initializeAttributes() {
 
   detections_subscriber_ = std::make_unique<message_filters::Subscriber<vision_msgs::Detection2DArray> >(
       nh_,
-      "/camera/depth/image_raw",
+      "/camera/depth/image_rect_raw",
       10
   );
   depth_image_subscriber_ = std::make_unique<message_filters::Subscriber<sensor_msgs::Image> >(
@@ -5600,10 +5603,10 @@ void Rrg::boundingBoxCallback(const vision_msgs::Detection2DArrayConstPtr detect
 
     voxel->label = static_cast<uint8_t>(detection.results[0].id);
     voxel->num_observations++;
+
     ROS_INFO("Label: %d", voxel->label);
     ROS_INFO("Num detections: %d", voxel->num_observations);
-  }
-  // for detection in detections
+  } // for detection in detections
 
 
 } // boundingBoxCallback
@@ -5633,12 +5636,12 @@ void Rrg::detectionsCallback(const vision_msgs::Detection2DArrayConstPtr detecti
     for(vision_msgs::Detection2D detection : detections_msg->detections){
       bbox_msg = detection.bbox;
       for(vision_msgs::BoundingBox2D bbox : splitBbox(bbox_msg)){
-        cv::Rect roi = to_roi(*cv_depth_image, detection.bbox);
+        cv::Rect roi = to_roi(*cv_depth_image, bbox);
         // If we try to crop an image using a region of interest that has
         // width or height equal to zero openCV will throw a runtime error,
         // avoid this by checking if the area of the region of interest is
         // greater than zero
-        if (roi.area() < 256) continue;
+        if (roi.area() < 1) continue;
 
         Eigen::Vector3d end_point = estimate_position(*cv_depth_image, roi);
         MapManager::VoxelStatus vs = map_manager_->getRayStatus(
@@ -5655,14 +5658,27 @@ void Rrg::detectionsCallback(const vision_msgs::Detection2DArrayConstPtr detecti
         voxel->num_observations++;
 
         std::size_t hash = std::hash<voxblox::LongIndex>()(center_voxel_index);
-        if(voxels_with_detections.count(hash) == 0){
-          voxels_with_detections.insert({hash, end_voxel});
-        }
+        if(voxels_with_detections_.count(hash) == 0){
+          voxels_with_detections_.insert({hash, std::make_pair(end_voxel, voxel->label)});
+        } 
         ROS_INFO("Label: %d", voxel->label);
         ROS_INFO("Num detections: %d", voxel->num_observations);
       }
     }
+    planner_msgs::DetectedVoxelArray msgArray;
+    for(auto const & x : voxels_with_detections_){
+      planner_msgs::DetectedVoxel msg;
+      Eigen::Vector3d voxel_point = x.second.first;
+      msg.point.x =  static_cast<double>(voxel_point[0]);
+      msg.point.y =  static_cast<double>(voxel_point[1]);
+      msg.point.z =  static_cast<double>(voxel_point[2]);
+      msg.label = x.second.second;
+      msg.num_observations = 0;
+      msgArray.voxels.push_back(msg);
+    }
+    detected_location_pub_.publish(msgArray);
 } // detectionsCallback
+
 
 
 std::vector<vision_msgs::BoundingBox2D> Rrg::splitBbox(const vision_msgs::BoundingBox2D bbox){
@@ -5704,7 +5720,7 @@ cv::Rect Rrg::to_roi(const cv::Mat &image, const vision_msgs::BoundingBox2D &bbo
     );
 
     return roi;
-}
+} // to_roi
 
 Eigen::Vector3d Rrg::estimate_position(const cv::Mat &depth_image,
                                    const cv::Rect roi
@@ -5721,7 +5737,7 @@ Eigen::Vector3d Rrg::estimate_position(const cv::Mat &depth_image,
     cv::Point3d position_cv = depth_camera_model.projectPixelTo3dRay(main_pixel) * (distance[0] / 1000);
     Eigen::Vector3d position(position_cv.x, position_cv.y, position_cv.z);
     return position;
-}
+} // estimate_position
 
 
 void Rrg::depthCameraInfoCallback(sensor_msgs::CameraInfoConstPtr depth_camera_info_msg)

@@ -51,6 +51,8 @@ add_message_files(
   Graph.msg
   CoveragePlannerLogger.msg
   BehaviourPlannerLogger.msg
+  DetectedVoxel.msg
+  DetectedVoxelArray.msg
 )
 
 add_action_files(
