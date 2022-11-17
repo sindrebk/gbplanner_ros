@@ -261,6 +261,7 @@ void GraphManager::convertGraphToMsg(planner_msgs::Graph& graph_msg) {
     vertex.num_unknown_voxels = v.second->vol_gain.num_unknown_voxels;
     vertex.num_occupied_voxels = v.second->vol_gain.num_occupied_voxels;
     vertex.num_free_voxels = v.second->vol_gain.num_free_voxels;
+    vertex.num_detected_voxels = v.second->vol_gain.num_detected_voxels;
     vertex.is_frontier = v.second->vol_gain.is_frontier;
     graph_msg.vertices.emplace_back(vertex);
   }
@@ -291,6 +292,7 @@ void GraphManager::convertMsgToGraph(const planner_msgs::Graph& graph_msg) {
     vertex->vol_gain.num_unknown_voxels = v.num_unknown_voxels;
     vertex->vol_gain.num_occupied_voxels = v.num_occupied_voxels;
     vertex->vol_gain.num_free_voxels = v.num_free_voxels;
+    vertex->vol_gain.num_detected_voxels = v.num_detected_voxels;
     vertex->vol_gain.is_frontier = v.is_frontier;
     if (v.is_frontier) vertex->type = VertexType::kFrontier;
     addVertex(vertex);

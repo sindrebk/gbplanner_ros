@@ -446,11 +446,11 @@ MapManagerVoxblox<SDFServerType, SDFVoxelType>::getPathStatus(
 template <typename SDFServerType, typename SDFVoxelType>
 void MapManagerVoxblox<SDFServerType, SDFVoxelType>::getScanStatus(
     Eigen::Vector3d& pos, std::vector<Eigen::Vector3d>& multiray_endpoints,
-    std::tuple<int, int, int>& gain_log,
+    std::tuple<int, int, int, int>& gain_log,
     std::vector<std::pair<Eigen::Vector3d, VoxelStatus>>& voxel_log,
     SensorParamsBase& sensor_params) {
   unsigned int num_unknown_voxels = 0, num_free_voxels = 0,
-               num_occupied_voxels = 0;
+               num_occupied_voxels = 0, num_detected_voxels = 0;
 
   const float voxel_size = sdf_layer_->voxel_size();
   const float voxel_size_inv = 1.0 / voxel_size;
@@ -532,6 +532,15 @@ void MapManagerVoxblox<SDFServerType, SDFVoxelType>::getScanStatus(
             VoxelStatus::kFree));
         continue;
       }
+      // Detected
+      if (voxel->label !=0){ // TODO
+        ++num_detected_voxels;
+        voxel_log.push_back(std::make_pair(
+            voxblox::getCenterPointFromGridIndex(global_index, voxel_size)
+                .cast<double>(),
+            VoxelStatus::kDetected));
+        continue;
+      }
       // Occupied
       /*raycast_occupied_vec_.push_back(std::hash<voxblox::GlobalIndex>()(global_index));*/
       ++num_occupied_voxels;
@@ -552,18 +561,18 @@ void MapManagerVoxblox<SDFServerType, SDFVoxelType>::getScanStatus(
   num_free_voxels = std::unique(raycast_free_vec_.begin(),
   raycast_free_vec_.end()) - raycast_free_vec_.begin();*/
   gain_log =
-      std::make_tuple(num_unknown_voxels, num_free_voxels, num_occupied_voxels);
+      std::make_tuple(num_unknown_voxels, num_free_voxels, num_occupied_voxels, num_detected_voxels);
 }
 
 #elif (RAY_CAST_METHOD == 1)
 template <typename SDFServerType, typename SDFVoxelType>
 void MapManagerVoxblox<SDFServerType, SDFVoxelType>::getScanStatus(
     Eigen::Vector3d& pos, std::vector<Eigen::Vector3d>& multiray_endpoints,
-    std::tuple<int, int, int>& gain_log,
+    std::tuple<int, int, int, int>& gain_log,
     std::vector<std::pair<Eigen::Vector3d, VoxelStatus>>& voxel_log,
     SensorParamsBase& sensor_params) {
   unsigned int num_unknown_voxels = 0, num_free_voxels = 0,
-               num_occupied_voxels = 0;
+               num_occupied_voxels = 0, num_detected_voxels = 0;
   int height = sensor_params.height;
   int width = sensor_params.width;
   Eigen::MatrixXd starting_points(
@@ -720,18 +729,18 @@ void MapManagerVoxblox<SDFServerType, SDFVoxelType>::getScanStatus(
     }
   }
   gain_log =
-      std::make_tuple(num_unknown_voxels, num_free_voxels, num_occupied_voxels);
+      std::make_tuple(num_unknown_voxels, num_free_voxels, num_occupied_voxels, num_detected_voxels);
 }
 #endif
 
 template <typename SDFServerType, typename SDFVoxelType>
 void MapManagerVoxblox<SDFServerType, SDFVoxelType>::getScanStatusIterative(
     Eigen::Vector3d& pos, std::vector<Eigen::Vector3d>& multiray_endpoints,
-    std::tuple<int, int, int>& gain_log,
+    std::tuple<int, int, int, int>& gain_log,
     std::vector<std::pair<Eigen::Vector3d, VoxelStatus>>& voxel_log,
     SensorParamsBase& sensor_params) {
   unsigned int num_unknown_voxels = 0, num_free_voxels = 0,
-               num_occupied_voxels = 0;
+               num_occupied_voxels = 0, num_detected_voxels = 0;
   int height = sensor_params.height;
   int width = sensor_params.width;
   Eigen::MatrixXd starting_points(
@@ -865,6 +874,26 @@ void MapManagerVoxblox<SDFServerType, SDFVoxelType>::getScanStatusIterative(
             starting_points(x + 1, y - 1) = std::min(ray_norm, step);
           continue;
         }
+        // Detected
+        if (voxel->label !=0) { // TODO
+          /*raycast_free_vec_.push_back(std::hash<voxblox::GlobalIndex>()(global_index));*/
+          int new_voxels_added = std::ceil(step_size / og_step_size);
+          num_detected_voxels += new_voxels_added;
+          for (int vi = 0; vi < new_voxels_added; ++vi)
+            voxel_log.push_back(std::make_pair(voxel_coordi.cast<double>(),
+                                               VoxelStatus::kDetected));
+          double x_increment_dist = step * sensor_params.resolution[0];
+          double y_increment_dist = step * sensor_params.resolution[1];
+          double diag_increment_dist = std::sqrt(std::pow(x_increment_dist, 2) +
+                                                 std::pow(y_increment_dist, 2));
+          if (x_increment_dist <= voxel_size && x < width)
+            starting_points(x + 1, y) = std::min(ray_norm, step);
+          if (y_increment_dist <= voxel_size && y > 0)
+            starting_points(x, y - 1) = std::min(ray_norm, step);
+          if (diag_increment_dist <= voxel_size && x < width && y > 0)
+            starting_points(x + 1, y - 1) = std::min(ray_norm, step);
+          continue;
+        }
         // Occupied
         /*raycast_occupied_vec_.push_back(std::hash<voxblox::GlobalIndex>()(global_index));*/
         int new_voxels_added = std::ceil(step_size / og_step_size);
@@ -888,5 +917,5 @@ void MapManagerVoxblox<SDFServerType, SDFVoxelType>::getScanStatusIterative(
     }
   }
   gain_log =
-      std::make_tuple(num_unknown_voxels, num_free_voxels, num_occupied_voxels);
+      std::make_tuple(num_unknown_voxels, num_free_voxels, num_occupied_voxels, num_detected_voxels);
 }

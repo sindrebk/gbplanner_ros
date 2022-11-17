@@ -36,7 +36,7 @@ class MapManager {
 
   virtual void getScanStatus(
       Eigen::Vector3d& pos, std::vector<Eigen::Vector3d>& multiray_endpoints,
-      std::tuple<int, int, int>& gain_log,
+      std::tuple<int, int, int, int>& gain_log,
       std::vector<std::pair<Eigen::Vector3d, VoxelStatus>>& voxel_log,
       SensorParamsBase& sensor_params) = 0;
 

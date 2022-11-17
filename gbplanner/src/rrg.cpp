@@ -196,6 +196,9 @@ void Rrg::reset() {
       case MapManager::VoxelStatus::kUnknown:
         ROS_INFO_COND(global_verbosity >= Verbosity::DEBUG, "Current box contains Unknown voxels.");
         break;
+      case MapManager::VoxelStatus::kDetected:
+        ROS_INFO_COND(global_verbosity >= Verbosity::DEBUG, "Current box contains Detected voxels.");
+        break;
     }
     // Assume that even it is not fully free, but safe to clear these voxels.
     ROS_WARN_COND(global_verbosity >= Verbosity::WARN, "Starting position is not clear--> clear space around the robot.");
@@ -359,6 +362,8 @@ double Rrg::projectSample(Eigen::Vector3d& sample,
   float voxel_size = map_manager_->getResolution();
 
   int unknown_count = 0;
+  int detected_count = 0;
+
   double central_ray_len = 0.0;
   std::vector<Eigen::Vector3d> extra_samples(5, Eigen::Vector3d::Zero());
   extra_samples[0] = Eigen::Vector3d(0.0, 0.0, 0.0);
@@ -418,6 +423,13 @@ double Rrg::projectSample(Eigen::Vector3d& sample,
           central_ray_len = ray_len;
         }
         ++unknown_count;
+      } else if (vs == MapManager::VoxelStatus::kDetected){
+        // TODO
+        double ray_len = std::abs(start(2) - end_voxel(2));
+        if (i == 0) {
+          central_ray_len = ray_len;
+        }
+        ++detected_count;
       }
     }
   }
@@ -2907,7 +2919,7 @@ void Rrg::computeVolumetricGain(StateVec& state, VolumetricGain& vgain,
     return;
   }
 
-  std::vector<std::tuple<int, int, int>> gain_log;
+  std::vector<std::tuple<int, int, int, int>> gain_log;
   gain_log.clear();
   std::vector<std::pair<Eigen::Vector3d, MapManager::VoxelStatus>> voxel_log;
   voxel_log.clear();
@@ -2947,6 +2959,8 @@ void Rrg::computeVolumetricGain(StateVec& state, VolumetricGain& vgain,
                 ++num_free_voxels;
               } else if (vs == MapManager::VoxelStatus::kOccupied) {
                 ++num_occupied_voxels;
+              } else if (vs == MapManager::VoxelStatus::kDetected) {
+                ++num_detected_voxels;
               }
               if (vis_en) voxel_log.push_back(std::make_pair(voxel, vs));
             }
@@ -2955,7 +2969,7 @@ void Rrg::computeVolumetricGain(StateVec& state, VolumetricGain& vgain,
       }
     }
     gain_log.push_back(std::make_tuple(num_unknown_voxels, num_free_voxels,
-                                       num_occupied_voxels));
+                                       num_occupied_voxels, num_detected_voxels));
   }
 
   // Return gain values.
@@ -2963,12 +2977,17 @@ void Rrg::computeVolumetricGain(StateVec& state, VolumetricGain& vgain,
     int num_unknown_voxels = std::get<0>(gain_log[i]);
     int num_free_voxels = std::get<1>(gain_log[i]);
     int num_occupied_voxels = std::get<2>(gain_log[i]);
+    int num_detected_voxels = std::get<3>(gain_log[i]);
+
     vgain.num_unknown_voxels += num_unknown_voxels;
     vgain.num_free_voxels += num_free_voxels;
     vgain.num_occupied_voxels += num_occupied_voxels;
+    vgain.num_detected_voxels += num_detected_voxels;
+    
     vgain.gain += num_unknown_voxels * planning_params_.unknown_voxel_gain +
                   num_free_voxels * planning_params_.free_voxel_gain +
-                  num_occupied_voxels * planning_params_.occupied_voxel_gain;
+                  num_occupied_voxels * planning_params_.occupied_voxel_gain +
+                  num_detected_voxels * planning_params_.detected_voxel_gain;
   }
 
   // Visualize if required.
@@ -2982,7 +3001,7 @@ void Rrg::computeVolumetricGainRayModel(StateVec& state, VolumetricGain& vgain,
                                         bool vis_en, bool iterative) {
   vgain.reset();
 
-  std::vector<std::tuple<int, int, int, int>> gain_log;
+  std::vector<std::tuple<int, int, int, int, int>> gain_log;
   std::vector<std::pair<Eigen::Vector3d, MapManager::VoxelStatus>> voxel_log;
   int raw_unk_voxels_count = 0;
   // @TODO tung.
@@ -2992,7 +3011,7 @@ void Rrg::computeVolumetricGainRayModel(StateVec& state, VolumetricGain& vgain,
     std::string sensor_name = planning_params_.exp_sensor_list[ind];
 
     Eigen::Vector3d origin(state[0], state[1], state[2]);
-    std::tuple<int, int, int> gain_log_tmp;
+    std::tuple<int, int, int, int> gain_log_tmp;
     std::vector<std::pair<Eigen::Vector3d, MapManager::VoxelStatus>>
         voxel_log_tmp;
     std::vector<Eigen::Vector3d> multiray_endpoints;
@@ -3011,7 +3030,7 @@ void Rrg::computeVolumetricGainRayModel(StateVec& state, VolumetricGain& vgain,
                                 voxel_log_tmp,
                                 sensor_params_.sensor[sensor_name]);
     int num_unknown_voxels = 0, num_free_voxels = 0, num_occupied_voxels = 0,
-        num_unknown_surf_voxels = 0;
+        num_detected_voxels = 0, num_unknown_surf_voxels = 0;
     // num_unknown_voxels = std::get<0>(gain_log_tmp);
     // num_free_voxels = std::get<1>(gain_log_tmp);
     // num_occupied_voxels = std::get<2>(gain_log_tmp);
@@ -3043,6 +3062,8 @@ void Rrg::computeVolumetricGainRayModel(StateVec& state, VolumetricGain& vgain,
             ++num_free_voxels;
           } else if (vs == MapManager::VoxelStatus::kOccupied) {
             ++num_occupied_voxels;
+          } else if (vs == MapManager::VoxelStatus::kDetected){
+            ++num_detected_voxels;
           } else {
             ROS_ERROR_COND(global_verbosity >= Verbosity::ERROR, "Unsupported voxel type.");
           }
@@ -3052,6 +3073,7 @@ void Rrg::computeVolumetricGainRayModel(StateVec& state, VolumetricGain& vgain,
     }
     gain_log.push_back(std::make_tuple(num_unknown_voxels, num_free_voxels,
                                        num_occupied_voxels,
+                                       num_detected_voxels,
                                        num_unknown_surf_voxels));
     if (vis_en) {
       visualization_->visualizeRays(state, multiray_endpoints);
@@ -3069,12 +3091,16 @@ void Rrg::computeVolumetricGainRayModel(StateVec& state, VolumetricGain& vgain,
     int num_unknown_voxels = std::get<0>(gain_log[i]);
     int num_free_voxels = std::get<1>(gain_log[i]);
     int num_occupied_voxels = std::get<2>(gain_log[i]);
+    int num_detected_voxels = std::get<3>(gain_log[i]);
+
     vgain.num_unknown_voxels += num_unknown_voxels;
     vgain.num_free_voxels += num_free_voxels;
     vgain.num_occupied_voxels += num_occupied_voxels;
+    vgain.num_detected_voxels += num_detected_voxels;
     vgain.gain += num_unknown_voxels * planning_params_.unknown_voxel_gain +
                   num_free_voxels * planning_params_.free_voxel_gain +
-                  num_occupied_voxels * planning_params_.occupied_voxel_gain;
+                  num_occupied_voxels * planning_params_.occupied_voxel_gain +
+                  num_detected_voxels * planning_params_.detected_voxel_gain;
   }
 
   // Visualize if required.
@@ -3092,7 +3118,7 @@ void Rrg::computeVolumetricGainRayModelNoBound(StateVec& state,
                                                VolumetricGain& vgain) {
   vgain.reset();
 
-  std::vector<std::tuple<int, int, int>> gain_log;
+  std::vector<std::tuple<int, int, int, int>> gain_log;
   std::vector<std::pair<Eigen::Vector3d, MapManager::VoxelStatus>> voxel_log;
   // @TODO tung.
   // Compute for each sensor in the exploration sensor list.
@@ -3101,7 +3127,7 @@ void Rrg::computeVolumetricGainRayModelNoBound(StateVec& state,
     std::string sensor_name = planning_params_.exp_sensor_list[ind];
 
     Eigen::Vector3d origin(state[0], state[1], state[2]);
-    std::tuple<int, int, int> gain_log_tmp;
+    std::tuple<int, int, int, int> gain_log_tmp;
     std::vector<std::pair<Eigen::Vector3d, MapManager::VoxelStatus>>
         voxel_log_tmp;
     std::vector<Eigen::Vector3d> multiray_endpoints;
@@ -3110,7 +3136,7 @@ void Rrg::computeVolumetricGainRayModelNoBound(StateVec& state,
     map_manager_->getScanStatus(origin, multiray_endpoints, gain_log_tmp,
                                 voxel_log_tmp,
                                 sensor_params_.sensor[sensor_name]);
-    int num_unknown_voxels = 0, num_free_voxels = 0, num_occupied_voxels = 0;
+    int num_unknown_voxels = 0, num_free_voxels = 0, num_occupied_voxels = 0; num_detected_voxels = 0;
     // Have to remove those not belong to the local bound.
     // At the same time check if this is frontier.
 
@@ -3125,13 +3151,15 @@ void Rrg::computeVolumetricGainRayModelNoBound(StateVec& state,
           ++num_free_voxels;
         } else if (vs == MapManager::VoxelStatus::kOccupied) {
           ++num_occupied_voxels;
+        } else if (vs == MapManager::VoxelStatus::kDetected) {
+          ++num_detected_voxels;
         } else {
           ROS_ERROR_COND(global_verbosity >= Verbosity::ERROR, "Unsupported voxel type.");
         }
       }
     }
     gain_log.push_back(std::make_tuple(num_unknown_voxels, num_free_voxels,
-                                       num_occupied_voxels));
+                                       num_occupied_voxels, num_detected_voxels));
     // Check if it is a potential frontier.
     if (sensor_params_.sensor[sensor_name].isFrontier(
             num_unknown_voxels * map_manager_->getResolution())) {
@@ -3144,12 +3172,17 @@ void Rrg::computeVolumetricGainRayModelNoBound(StateVec& state,
     int num_unknown_voxels = std::get<0>(gain_log[i]);
     int num_free_voxels = std::get<1>(gain_log[i]);
     int num_occupied_voxels = std::get<2>(gain_log[i]);
+    int num_detected_voxels = std::get<3>(gain_log[i]);
+
     vgain.num_unknown_voxels += num_unknown_voxels;
     vgain.num_free_voxels += num_free_voxels;
     vgain.num_occupied_voxels += num_occupied_voxels;
+    vgain.num_detected_voxels += num_detected_voxels;
+
     vgain.gain += num_unknown_voxels * planning_params_.unknown_voxel_gain +
                   num_free_voxels * planning_params_.free_voxel_gain +
-                  num_occupied_voxels * planning_params_.occupied_voxel_gain;
+                  num_occupied_voxels * planning_params_.occupied_voxel_gain +
+                  num_detected_voxels * planning_params_.detected_voxel_gain;
   }
 }
 
