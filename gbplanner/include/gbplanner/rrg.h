@@ -109,8 +109,6 @@ class Rrg {
   // Clear out old vertices from previous session.
   void clear();
 
-  void boundingBoxCallback(const vision_msgs::Detection2DArrayConstPtr detections); // Henrik
-
   void detectionsCallback(const vision_msgs::Detection2DArrayConstPtr detections_msg,
                                   const sensor_msgs::ImageConstPtr depth_image_msg);
 
