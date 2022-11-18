@@ -2936,7 +2936,7 @@ void Rrg::computeVolumetricGain(StateVec& state, VolumetricGain& vgain,
                    state[i] + sensor_params_.sensor[sensor_name].max_range);
     }
 
-    int num_unknown_voxels = 0, num_free_voxels = 0, num_occupied_voxels = 0;
+    int num_unknown_voxels = 0, num_free_voxels = 0, num_occupied_voxels = 0, num_detected_voxels = 0;
     // Check all voxels inside local bound.
     Eigen::Vector3d origin(state[0], state[1], state[2]);
     Eigen::Vector3d voxel;
@@ -3134,7 +3134,7 @@ void Rrg::computeVolumetricGainRayModelNoBound(StateVec& state,
     map_manager_->getScanStatus(origin, multiray_endpoints, gain_log_tmp,
                                 voxel_log_tmp,
                                 sensor_params_.sensor[sensor_name]);
-    int num_unknown_voxels = 0, num_free_voxels = 0, num_occupied_voxels = 0; num_detected_voxels = 0;
+    int num_unknown_voxels = 0, num_free_voxels = 0, num_occupied_voxels = 0, num_detected_voxels = 0;
     // Have to remove those not belong to the local bound.
     // At the same time check if this is frontier.
 

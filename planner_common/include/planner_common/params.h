@@ -296,6 +296,7 @@ struct PlanningParams {
   double free_voxel_gain;
   double occupied_voxel_gain;
   double unknown_voxel_gain;
+  double detected_voxel_gain;
   double path_length_penalty;
   double path_direction_penalty;
   double hanging_vertex_penalty;

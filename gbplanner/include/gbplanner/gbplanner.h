@@ -53,10 +53,6 @@ class Gbplanner {
 
   Rrg* rrg_;
 
-<<<<<<< HEAD
-=======
-
->>>>>>> origin/detectedVoxels
  private:
   ros::NodeHandle nh_;
   ros::NodeHandle nh_private_;
@@ -138,10 +134,6 @@ class Gbplanner {
   void robotStatusCallback(const planner_msgs::RobotStatus& status);
 
   Gbplanner::PlannerStatus getPlannerStatus();
-<<<<<<< HEAD
-=======
-
->>>>>>> origin/detectedVoxels
 };
 
 }  // namespace explorer

@@ -341,3 +341,4 @@ void GraphManager::loadGraph(const std::string& path) {
   planner_msgs::Graph graph_msg;
   ros::serialization::IStream stream_in(buffer.get(), size);
   ros::serialization::deserialize(stream_in, graph_msg);
+}
