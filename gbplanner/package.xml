@@ -12,8 +12,11 @@
   <depend>cv_bridge</depend>
   <depend>tf</depend>
   <depend>message_generation</depend>
-  <depend>geometry_msgs</depend>
-  <depend>visualization_msgs</depend>
+  <depend>geometry_msgs</depend> 
+  <depend>image_geometry</depend>
+  <depend>Boost</depend>
+  <depend>visualization_msgs</depend> 
+  <depend>vision_msgs</depend>
   <depend>kdtree</depend>
   <depend>voxblox_ros</depend>
   <depend>planner_common</depend>

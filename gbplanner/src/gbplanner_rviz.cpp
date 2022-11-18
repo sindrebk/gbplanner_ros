@@ -2111,6 +2111,24 @@ void Visualization::visualizeVolumetricGain(
   occupied_voxel_marker.lifetime = ros::Duration(graph_lifetime);
   occupied_voxel_marker.frame_locked = false;
 
+  visualization_msgs::Marker detected_voxel_marker;
+  detected_voxel_marker.header.stamp = ros::Time::now();
+  detected_voxel_marker.header.seq = 0;
+  detected_voxel_marker.header.frame_id = world_frame_id;
+  detected_voxel_marker.id = 0;
+  detected_voxel_marker.ns = "detected_voxels";
+  detected_voxel_marker.action = visualization_msgs::Marker::ADD;
+  detected_voxel_marker.type = visualization_msgs::Marker::CUBE_LIST;
+  detected_voxel_marker.scale.x = voxel_size;
+  detected_voxel_marker.scale.y = voxel_size;
+  detected_voxel_marker.scale.z = voxel_size;
+  detected_voxel_marker.color.r = 0.0;
+  detected_voxel_marker.color.g = 1.0;
+  detected_voxel_marker.color.b = 1.0;
+  detected_voxel_marker.color.a = 0.4;
+  detected_voxel_marker.lifetime = ros::Duration(graph_lifetime);
+  detected_voxel_marker.frame_locked = false;
+
   for (auto& v : voxels) {
     geometry_msgs::Point p;
     p.x = v.first[0];
@@ -2122,6 +2140,8 @@ void Visualization::visualizeVolumetricGain(
       free_voxel_marker.points.push_back(p);
     } else if (v.second == MapManager::VoxelStatus::kOccupied) {
       occupied_voxel_marker.points.push_back(p);
+    } else if (v.second == MapManager::VoxelStatus::kDetected){
+      detected_voxel_marker.points.push_back(p);
     } else {
       ROS_ERROR_COND(global_verbosity >= Verbosity::ERROR, "Unsupported voxel type.");
     }
@@ -2129,6 +2149,8 @@ void Visualization::visualizeVolumetricGain(
   marker_array.markers.push_back(unknown_voxel_marker);
   marker_array.markers.push_back(free_voxel_marker);
   marker_array.markers.push_back(occupied_voxel_marker);
+  marker_array.markers.push_back(detected_voxel_marker);
+
 
   volumetric_gain_pub_.publish(marker_array);
 }

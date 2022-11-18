@@ -141,6 +141,7 @@ PlanningParams:
   occupied_voxel_gain: 0.0
   free_voxel_gain:  0.0 # prefer directions towards more free voxels in case of the dead-end
   unknown_voxel_gain: 60.0
+  detected_voxel_gain: 100.0
 
   traverse_length_max: 8.0 # Maximum length of the best path will be truncated to for actual traversal
   traverse_time_max: 500.0

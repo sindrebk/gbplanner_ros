@@ -39,7 +39,7 @@
 # MAPPING
 - git:
     local-name: src/mapping/voxblox/
-    uri: https://github.com/ntnu-arl/voxblox.git
+    uri: https://github.com/sindrebk/voxblox.git
     version: dev/noetic
 
 #EXPLORATION

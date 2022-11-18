@@ -30,9 +30,11 @@
     <arg name="paused" value="false" />
     <arg name="verbose" value="false"/>
   </include>
+
   <group ns="$(arg robot_name)">
     <node name="img_throttler" type="throttle" pkg="topic_tools" args="messages vi_sensor/camera_depth/depth/points 5 vi_sensor/camera_depth/depth/points_throttled" />
     <node name="odo_throttler" type="throttle" pkg="topic_tools" args="messages ground_truth/odometry 100 ground_truth/odometry_throttled" />
+
     <!-- MAV launch -->
     <include file="$(find rotors_gazebo)/launch/spawn_mav.launch">
       <arg name="mav_name" value="$(arg robot_name)" />

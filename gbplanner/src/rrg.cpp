@@ -85,6 +85,33 @@ void Rrg::initializeAttributes() {
       nh_.createTimer(ros::Duration(kFreePointCloudUpdatePeriod),
                       &Rrg::freePointCloudtimerCallback, this);
 
+
+  depth_camera_info_subscriber_ = std::make_unique<ros::Subscriber>(nh_.subscribe(
+      "/camera/depth/depth_camera_info", 
+      10, 
+      &Rrg::depthCameraInfoCallback, 
+      this
+      )
+  );
+
+  detections_subscriber_ = std::make_unique<message_filters::Subscriber<vision_msgs::Detection2DArray> >(
+      nh_,
+      "/camera/depth/image_raw",
+      10
+  );
+  depth_image_subscriber_ = std::make_unique<message_filters::Subscriber<sensor_msgs::Image> >(
+      nh_,
+      "/yolo/detections",
+      10
+  );
+  sync_ = std::make_unique<message_filters::Synchronizer<DepthDetectionSyncPolicy> >(
+      DepthDetectionSyncPolicy(100),
+      *detections_subscriber_,
+      *depth_image_subscriber_
+  );
+
+  sync_->registerCallback(boost::bind(&Rrg::detectionsCallback, this, _1, _2));
+  
   // FIX-ME
   semantics_subscriber_ =
       nh_.subscribe("semantic_location", 100, &Rrg::semanticsCallback, this);
@@ -106,8 +133,7 @@ void Rrg::initializeAttributes() {
 void Rrg::reset() {
   // Check if the local graph frontiers have been added to the global graph
   if (add_frontiers_to_global_graph_) {
-    ROS_INFO_COND(global_verbosity >= Verbosity::INFO,
-                  "Reset: Adding frontiers to global graph");
+    ROS_INFO_COND(global_verbosity >= Verbosity::INFO, "Reset: Adding frontiers to global graph");
     add_frontiers_to_global_graph_ = false;
     addFrontiers(0);  // id given as 0 because it is not used
   }
@@ -160,22 +186,20 @@ void Rrg::reset() {
   if (MapManager::VoxelStatus::kFree != voxel_state) {
     switch (voxel_state) {
       case MapManager::VoxelStatus::kFree:
-        ROS_INFO_COND(global_verbosity >= Verbosity::DEBUG,
-                      "Current box is Free.");
+        ROS_INFO_COND(global_verbosity >= Verbosity::DEBUG, "Current box is Free.");
         break;
       case MapManager::VoxelStatus::kOccupied:
-        ROS_INFO_COND(global_verbosity >= Verbosity::DEBUG,
-                      "Current box contains Occupied voxels.");
+        ROS_INFO_COND(global_verbosity >= Verbosity::DEBUG, "Current box contains Occupied voxels.");
         break;
       case MapManager::VoxelStatus::kUnknown:
-        ROS_INFO_COND(global_verbosity >= Verbosity::DEBUG,
-                      "Current box contains Unknown voxels.");
+        ROS_INFO_COND(global_verbosity >= Verbosity::DEBUG, "Current box contains Unknown voxels.");
+        break;
+      case MapManager::VoxelStatus::kDetected:
+        ROS_INFO_COND(global_verbosity >= Verbosity::DEBUG, "Current box contains Detected voxels.");
         break;
     }
     // Assume that even it is not fully free, but safe to clear these voxels.
-    ROS_WARN_COND(
-        global_verbosity >= Verbosity::WARN,
-        "Starting position is not clear--> clear space around the robot.");
+    ROS_WARN_COND(global_verbosity >= Verbosity::WARN, "Starting position is not clear--> clear space around the robot.");
     map_manager_->augmentFreeBox(
         Eigen::Vector3d(root_state[0], root_state[1], root_state[2]) +
             robot_params_.center_offset,
@@ -336,6 +360,8 @@ double Rrg::projectSample(Eigen::Vector3d& sample,
   float voxel_size = map_manager_->getResolution();
 
   int unknown_count = 0;
+  int detected_count = 0;
+
   double central_ray_len = 0.0;
   std::vector<Eigen::Vector3d> extra_samples(5, Eigen::Vector3d::Zero());
   extra_samples[0] = Eigen::Vector3d(0.0, 0.0, 0.0);
@@ -395,6 +421,13 @@ double Rrg::projectSample(Eigen::Vector3d& sample,
           central_ray_len = ray_len;
         }
         ++unknown_count;
+      } else if (vs == MapManager::VoxelStatus::kDetected){
+        // TODO
+        double ray_len = std::abs(start(2) - end_voxel(2));
+        if (i == 0) {
+          central_ray_len = ray_len;
+        }
+        ++detected_count;
       }
     }
   }
@@ -1056,9 +1089,7 @@ Rrg::GraphStatus Rrg::buildGraph() {
     Vertex* global_vertex = global_graph_->getVertex(current_global_vertex_id_);
     // Global repositioning stopped in between
     if ((current_state_.head(3) - global_vertex->state.head(3)).norm() > 5.0) {
-      ROS_WARN_COND(
-          global_verbosity >= Verbosity::WARN,
-          "Global frontier not reached. Triggering global planner again");
+      ROS_WARN_COND(global_verbosity >= Verbosity::WARN, "Global frontier not reached. Triggering global planner again");
       local_exploration_ongoing_ = false;
       return GraphStatus::NOT_OK;
     }
@@ -1147,10 +1178,8 @@ Rrg::GraphStatus Rrg::buildGraph() {
     visualization_->visualizeGeofence(geofence_manager_);
 
   planner_trigger_count_++;
-  ROS_INFO_COND(
-      global_verbosity >= Verbosity::DEBUG,
-      "Formed a graph with [%d] vertices and [%d] edges with [%d] loops",
-      num_vertices, num_edges, loop_count);
+  ROS_INFO_COND(global_verbosity >= Verbosity::DEBUG, "Formed a graph with [%d] vertices and [%d] edges with [%d] loops",
+           num_vertices, num_edges, loop_count);
 
   if (planning_params_.type == PlanningModeType::kAdaptiveExploration)
     visualization_->visualizeSampler(random_sampler_adaptive_);
@@ -1168,9 +1197,8 @@ Rrg::GraphStatus Rrg::buildGraph() {
     return Rrg::GraphStatus::OK;
   } else {
     visualization_->visualizeFailedEdges(stat_);
-    ROS_INFO_COND(global_verbosity >= Verbosity::DEBUG,
-                  "Number of failed samples: [%d] vertices and [%d] edges",
-                  stat_->num_vertices_fail, stat_->num_edges_fail);
+    ROS_INFO_COND(global_verbosity >= Verbosity::DEBUG, "Number of failed samples: [%d] vertices and [%d] edges",
+             stat_->num_vertices_fail, stat_->num_edges_fail);
     return Rrg::GraphStatus::ERR_NO_FEASIBLE_PATH;
   }
 }
@@ -1209,9 +1237,8 @@ Rrg::GraphStatus Rrg::buildGridGraph(StateVec state, Eigen::Vector3d robot_size,
     if (num_nodes[i] == 0) num_nodes[i] = 1;
     root_node_ind[i] = (int)(-grid_min[i] / grid_res[i]);
   }
-  ROS_WARN_COND(global_verbosity >= Verbosity::DEBUG,
-                "Number of nodes [%d][%d][%d].", num_nodes[0], num_nodes[1],
-                num_nodes[2]);
+  ROS_WARN_COND(global_verbosity >= Verbosity::DEBUG, "Number of nodes [%d][%d][%d].", num_nodes[0], num_nodes[1],
+           num_nodes[2]);
 
   int num_total_nodes = num_nodes[0] * num_nodes[1] * num_nodes[2];
   Vertex** vertices_mat = new Vertex*[num_total_nodes];
@@ -1278,8 +1305,7 @@ Rrg::GraphStatus Rrg::buildGridGraph(StateVec state, Eigen::Vector3d robot_size,
       }
     }
   }
-  ROS_WARN_COND(global_verbosity >= Verbosity::DEBUG,
-                "Number of free nodes [%d].", free_vertex_count);
+  ROS_WARN_COND(global_verbosity >= Verbosity::DEBUG, "Number of free nodes [%d].", free_vertex_count);
 
   // Quick check for edge shorter than map resolution:
   double map_res = map_manager_->getResolution();
@@ -1357,8 +1383,7 @@ Rrg::GraphStatus Rrg::buildGridGraph(StateVec state, Eigen::Vector3d robot_size,
     }
   }
 
-  ROS_WARN_COND(global_verbosity >= Verbosity::DEBUG, "Free edges: [%d]",
-                free_edge_count);
+  ROS_WARN_COND(global_verbosity >= Verbosity::DEBUG, "Free edges: [%d]", free_edge_count);
 
   // Check collision along diagonal edges
   double diag_len = std::sqrt(dx_len * dx_len + dy_len * dy_len);
@@ -1415,9 +1440,8 @@ Rrg::GraphStatus Rrg::buildGridGraph(StateVec state, Eigen::Vector3d robot_size,
   }
 
   // Add source vertex.
-  ROS_WARN_COND(global_verbosity >= Verbosity::DEBUG,
-                "Grid graph: %d vertices, %d edges",
-                local_graph_->getNumVertices(), local_graph_->getNumEdges());
+  ROS_WARN_COND(global_verbosity >= Verbosity::DEBUG, "Grid graph: %d vertices, %d edges", local_graph_->getNumVertices(),
+           local_graph_->getNumEdges());
   return GraphStatus::OK;
 }
 
@@ -1498,7 +1522,7 @@ Rrg::GraphStatus Rrg::evaluateGraph() {
             // Negative slope
             if (inclination > planning_params_.max_negative_inclination ||
                 (std::atan2(std::abs(segment(2)), segment.head(2).norm()) >
-                 planning_params_.max_negative_inclination)) {
+                    planning_params_.max_negative_inclination)) {
               path_gain = 0.0;
               negative_edge_leafs.push_back(leaf_vertices[i]->id);
               inadmissible_negative_edges.push_back(
@@ -1539,17 +1563,14 @@ Rrg::GraphStatus Rrg::evaluateGraph() {
   if (planning_params_.auto_global_planner_enable) {
     if (!frontier_exists) {
       ++num_low_gain_iters_;
-      ROS_WARN_COND(global_verbosity >= Verbosity::DEBUG,
-                    "No frontier found in this round. Total rounds: %d",
-                    num_low_gain_iters_);
+      ROS_WARN_COND(global_verbosity >= Verbosity::DEBUG, "No frontier found in this round. Total rounds: %d",
+               num_low_gain_iters_);
     } else {
       if (num_low_gain_iters_ > 0) --num_low_gain_iters_;
     }
     if (num_low_gain_iters_ >= 4) {
-      ROS_WARN_COND(
-          global_verbosity >= Verbosity::DEBUG,
-          "%d consecutinve low gain paths, triggering global planner.",
-          num_low_gain_iters_);
+      ROS_WARN_COND(global_verbosity >= Verbosity::DEBUG, "%d consecutinve low gain paths, triggering global planner.",
+               num_low_gain_iters_);
       num_low_gain_iters_ = 0;
       auto_global_planner_trig_ = true;
       return Rrg::GraphStatus::NOT_OK;
@@ -1576,9 +1597,7 @@ Rrg::GraphStatus Rrg::evaluateGraph() {
     }
     best_vertex_ = local_graph_->getVertex(path[0]);
     //
-    ROS_INFO_COND(global_verbosity >= Verbosity::INFO,
-                  "Best path: with gain [%f] and ID [%d] ", best_gain,
-                  best_path_id);
+    ROS_INFO_COND(global_verbosity >= Verbosity::INFO, "Best path: with gain [%f] and ID [%d] ", best_gain, best_path_id);
     gstatus = Rrg::GraphStatus::OK;
 
     add_frontiers_to_global_graph_ = true;
@@ -1691,8 +1710,7 @@ bool Rrg::modifyPath(pcl::PointCloud<pcl::PointXYZ>* obstacle_pcl,
   if ((dist_min_sq == std::numeric_limits<double>::max()) ||
       (dist_min_sq < kDDist)) {
     // the path is too close to obstacle.
-    ROS_WARN_COND(global_verbosity >= Verbosity::DEBUG,
-                  "[IMPRV] Path too close to obstacle");
+    ROS_WARN_COND(global_verbosity >= Verbosity::DEBUG, "[IMPRV] Path too close to obstacle");
     return false;
   }
 
@@ -1844,9 +1862,8 @@ void Rrg::addFrontiers(int best_vertex_id) {
   // by normal vertices or any frontiers. If yes, don't add this path;
   // otherwise, add this path to the global graph.
 
-  ROS_INFO_COND(global_verbosity >= Verbosity::INFO,
-                "Global graph: %d vertices, %d edges.",
-                global_graph_->getNumVertices(), global_graph_->getNumEdges());
+  ROS_INFO_COND(global_verbosity >= Verbosity::INFO, "Global graph: %d vertices, %d edges.",
+           global_graph_->getNumVertices(), global_graph_->getNumEdges());
   bool update_global_frontiers = true;
   if (update_global_frontiers) {
     std::vector<Vertex*> global_frontiers;
@@ -1856,9 +1873,8 @@ void Rrg::addFrontiers(int best_vertex_id) {
         global_frontiers.push_back(global_graph_->getVertex(id));
       }
     }
-    ROS_INFO_COND(global_verbosity >= Verbosity::INFO,
-                  "Have %d frontiers from global graph.",
-                  (int)global_frontiers.size());
+    ROS_INFO_COND(global_verbosity >= Verbosity::INFO, "Have %d frontiers from global graph.",
+             (int)global_frontiers.size());
     for (auto& v : global_frontiers) {
       computeVolumetricGainRayModelNoBound(v->state, v->vol_gain);
       if (!v->vol_gain.is_frontier) v->type = VertexType::kUnvisited;
@@ -1874,12 +1890,10 @@ void Rrg::addFrontiers(int best_vertex_id) {
       frontier_vertices.push_back(v);
     }
   }
-  ROS_INFO_COND(global_verbosity >= Verbosity::INFO,
-                "Get %d leaf vertices from newly local graph.",
-                (int)leaf_vertices.size());
-  ROS_INFO_COND(global_verbosity >= Verbosity::INFO,
-                "Get %d frontiers from newly local graph.",
-                (int)frontier_vertices.size());
+  ROS_INFO_COND(global_verbosity >= Verbosity::INFO, "Get %d leaf vertices from newly local graph.",
+           (int)leaf_vertices.size());
+  ROS_INFO_COND(global_verbosity >= Verbosity::INFO, "Get %d frontiers from newly local graph.",
+           (int)frontier_vertices.size());
 
   // Clustering the frontier and add principle path to the global.
   std::vector<int> cluster_ids = performShortestPathsClustering(
@@ -1953,8 +1967,7 @@ void Rrg::freePointCloudtimerCallback(const ros::TimerEvent& event) {
 void Rrg::expandGlobalGraphFrontierAdditionTimerCallback(
     const ros::TimerEvent& event) {
   if (add_frontiers_to_global_graph_) {
-    ROS_INFO_COND(global_verbosity >= Verbosity::INFO,
-                  "Timer: Adding frontiers to global graph");
+    ROS_INFO_COND(global_verbosity >= Verbosity::INFO, "Timer: Adding frontiers to global graph");
     add_frontiers_to_global_graph_ = false;
     addFrontiers(0);  // id given as 0 because it is not used
   }
@@ -2108,15 +2121,13 @@ void Rrg::semanticsCallback(
   if (MapManager::VoxelStatus::kFree !=
       map_manager_->getBoxStatus(sem + robot_params_.center_offset,
                                  robot_box_size_, true)) {
-    ROS_WARN_COND(global_verbosity >= Verbosity::WARN,
-                  "[SEMANTICS]: Marker state not free.");
+    ROS_WARN_COND(global_verbosity >= Verbosity::WARN, "[SEMANTICS]: Marker state not free.");
     return;
   }
 
   Vertex* temp_nearest_vertex;
   if (!global_graph_->getNearestVertex(new_state, &temp_nearest_vertex)) {
-    ROS_WARN_COND(global_verbosity >= Verbosity::WARN,
-                  "[SEMANTICS]: No nearest vertex found.");
+    ROS_WARN_COND(global_verbosity >= Verbosity::WARN, "[SEMANTICS]: No nearest vertex found.");
     return;
   }
   std::vector<Vertex*> nearest_vertices;
@@ -2128,8 +2139,7 @@ void Rrg::semanticsCallback(
   // Range of search = 2*closest node
   if (!global_graph_->getNearestVertices(new_state, 2.0 * ((sem - nv).norm()),
                                          &nearest_vertices)) {
-    ROS_WARN_COND(global_verbosity >= Verbosity::WARN,
-                  "[SEMANTICS]: No nearest vertex found.");
+    ROS_WARN_COND(global_verbosity >= Verbosity::WARN, "[SEMANTICS]: No nearest vertex found.");
     return;
   }
 
@@ -2161,13 +2171,11 @@ void Rrg::semanticsCallback(
   }
 
   if (!path_status) {
-    ROS_WARN_COND(global_verbosity >= Verbosity::WARN,
-                  "[SEMANTICS]: Cannot connect to nearest node");
+    ROS_WARN_COND(global_verbosity >= Verbosity::WARN, "[SEMANTICS]: Cannot connect to nearest node");
     return;
   } else {
     std::vector<Vertex*> semantic_path;
-    ROS_INFO_COND(
-        global_verbosity >= Verbosity::INFO,
+    ROS_INFO_COND(global_verbosity >= Verbosity::INFO, 
         "[SEMANTICS]: Found a path to the semantic point with %d vertices.",
         (int)path_ret.size());
     if (path_ret.size() > 2) {
@@ -2250,10 +2258,8 @@ ConnectStatus Rrg::findPathToConnect(
   path_ret.clear();
   graph_manager->reset();
 
-  ROS_INFO_COND(global_verbosity >= Verbosity::INFO,
-                "Search a path from src [%f,%f,%f] to tgt [%f,%f,%f]",
-                source[0], source[1], source[2], target[0], target[1],
-                target[2]);
+  ROS_INFO_COND(global_verbosity >= Verbosity::INFO, "Search a path from src [%f,%f,%f] to tgt [%f,%f,%f]", source[0],
+           source[1], source[2], target[0], target[1], target[2]);
 
   // Check a corner case if exists a direct collision-free path to connect
   // source and target.
@@ -2266,8 +2272,7 @@ ConnectStatus Rrg::findPathToConnect(
         src_pos + robot_params_.center_offset,
         tgt_pos + robot_params_.center_offset, robot_box_size_, true);
     if (voxel_state == MapManager::VoxelStatus::kFree) {
-      ROS_INFO_COND(global_verbosity >= Verbosity::INFO,
-                    "Try straight path...");
+      ROS_INFO_COND(global_verbosity >= Verbosity::INFO, "Try straight path...");
       // Add source to the graph.
       Vertex* source_vertex =
           new Vertex(graph_manager->generateVertexID(), source);
@@ -2313,12 +2318,10 @@ ConnectStatus Rrg::findPathToConnect(
     if (MapManager::VoxelStatus::kFree != voxel_state) {
       switch (voxel_state) {
         case MapManager::VoxelStatus::kOccupied:
-          ROS_WARN_COND(global_verbosity >= Verbosity::WARN,
-                        "Source position contains Occupied voxels --> Stop.");
+          ROS_WARN_COND(global_verbosity >= Verbosity::WARN, "Source position contains Occupied voxels --> Stop.");
           break;
         case MapManager::VoxelStatus::kUnknown:
-          ROS_WARN_COND(global_verbosity >= Verbosity::WARN,
-                        "Source position contains Unknown voxels  --> Stop.");
+          ROS_WARN_COND(global_verbosity >= Verbosity::WARN, "Source position contains Unknown voxels  --> Stop.");
           break;
         case MapManager::VoxelStatus::kFree:
           break;
@@ -2371,9 +2374,8 @@ ConnectStatus Rrg::findPathToConnect(
         (num_edges > params.num_edges_max))
       stop_sampling = true;
   }
-  ROS_INFO_COND(global_verbosity >= Verbosity::DEBUG,
-                "Built a graph with %d vertices and %d edges.",
-                graph_manager->getNumVertices(), graph_manager->getNumEdges());
+  ROS_INFO_COND(global_verbosity >= Verbosity::DEBUG, "Built a graph with %d vertices and %d edges.",
+           graph_manager->getNumVertices(), graph_manager->getNumEdges());
 
   // Try to add target to graph as well.
   bool added_target = false;
@@ -2389,23 +2391,19 @@ ConnectStatus Rrg::findPathToConnect(
       ExpandGraphReport rep;
       expandGraph(graph_manager, target, rep);
       if (rep.status == ExpandGraphStatus::kSuccess) {
-        ROS_INFO_COND(global_verbosity >= Verbosity::INFO,
-                      "Added target to the graph successfully.");
+        ROS_INFO_COND(global_verbosity >= Verbosity::INFO, "Added target to the graph successfully.");
         num_vertices += rep.num_vertices_added;
         num_edges += rep.num_edges_added;
         added_target = true;
         target_vertex = rep.vertex_added;
       } else {
-        ROS_INFO_COND(global_verbosity >= Verbosity::INFO,
-                      "Cannot expand the graph to connect to the target.");
+        ROS_INFO_COND(global_verbosity >= Verbosity::INFO, "Cannot expand the graph to connect to the target.");
       }
     } else {
-      ROS_INFO_COND(global_verbosity >= Verbosity::INFO,
-                    "Target is not free, failed to add to the graph.");
+      ROS_INFO_COND(global_verbosity >= Verbosity::INFO, "Target is not free, failed to add to the graph.");
     }
   } else {
-    ROS_WARN_COND(global_verbosity >= Verbosity::WARN,
-                  "ConnectStatus::kErrorNoFeasiblePath");
+    ROS_WARN_COND(global_verbosity >= Verbosity::WARN, "ConnectStatus::kErrorNoFeasiblePath");
     status = ConnectStatus::kErrorNoFeasiblePath;
     return status;
   }
@@ -2427,9 +2425,8 @@ ConnectStatus Rrg::findPathToConnect(
     // Pick the shortest one.
     target_vertex = target_neigbors[0];
   }
-  ROS_INFO_COND(global_verbosity >= Verbosity::INFO,
-                "Get shortest path [%d] from %d path.", target_vertex->id,
-                (int)target_neigbors.size());
+  ROS_INFO_COND(global_verbosity >= Verbosity::INFO, "Get shortest path [%d] from %d path.", target_vertex->id,
+           (int)target_neigbors.size());
   std::vector<int> path_id_list;
   graph_manager->getShortestPath(target_vertex->id, graph_rep, false,
                                  path_id_list);
@@ -2477,8 +2474,7 @@ bool Rrg::loadParams(bool shared_params) {
   if (!sensor_params_.loadParams(ns + "/SensorParams")) return false;
 
   if (!free_frustum_params_.loadParams(ns + "/FreeFrustumParams")) {
-    ROS_WARN_COND(global_verbosity >= Verbosity::WARN,
-                  "No setting for FreeFrustumParams.");
+    ROS_WARN_COND(global_verbosity >= Verbosity::WARN, "No setting for FreeFrustumParams.");
   }
 
   if (!planning_params_.loadParams(ns + "/PlanningParams")) return false;
@@ -2528,12 +2524,10 @@ bool Rrg::loadParams(bool shared_params) {
     return false;
   if (!local_adaptive_params_.loadParams(
           ns + "/BoundedSpaceParams/LocalAdaptiveExp")) {
-    ROS_WARN_COND(global_verbosity >= Verbosity::WARN,
-                  "No setting for adaptive exploration mode.");
+    ROS_WARN_COND(global_verbosity >= Verbosity::WARN, "No setting for adaptive exploration mode.");
   }
   if (!adaptive_obb_->loadParams(ns + "/AdaptiveObbParams")) {
-    ROS_WARN_COND(global_verbosity >= Verbosity::WARN,
-                  "No setting for adaptive exploration mode.");
+    ROS_WARN_COND(global_verbosity >= Verbosity::WARN, "No setting for adaptive exploration mode.");
   }
   adaptive_orig_min_val_ = local_adaptive_params_.min_val;
   adaptive_orig_max_val_ = local_adaptive_params_.max_val;
@@ -2548,8 +2542,7 @@ bool Rrg::loadParams(bool shared_params) {
     return false;
   if (!random_sampler_adaptive_.loadParams(
           ns + "/RandomSamplerParams/SamplerForAdaptiveExp")) {
-    ROS_WARN_COND(global_verbosity >= Verbosity::WARN,
-                  "No setting for adaptive exploration mode.");
+    ROS_WARN_COND(global_verbosity >= Verbosity::WARN, "No setting for adaptive exploration mode.");
   }
 
   if (!robot_dynamics_params_.loadParams(ns + "/RobotDynamics")) return false;
@@ -2633,8 +2626,7 @@ bool Rrg::setGlobalBound(planner_msgs::PlanningBound& bound,
          bound.max_val.y - 0.5 * robot_box_size_.y()) ||
         (current_state_.z() + robot_params_.center_offset.z() >
          bound.max_val.z - 0.5 * robot_box_size_.z())) {
-      ROS_WARN_COND(
-          global_verbosity >= Verbosity::WARN,
+      ROS_WARN_COND(global_verbosity >= Verbosity::WARN, 
           "[GlobalBound] Failed to change since robot's position is outside "
           "the global bound.");
       return false;
@@ -2651,8 +2643,7 @@ bool Rrg::setGlobalBound(planner_msgs::PlanningBound& bound,
     global_bound_.set(v_min, v_max);
     global_space_params_.min_val = v_min;
     global_space_params_.max_val = v_max;
-    ROS_WARN_COND(
-        global_verbosity >= Verbosity::WARN,
+    ROS_WARN_COND(global_verbosity >= Verbosity::WARN, 
         "[GlobalBound] Changed successfully: Min [%f, %f, %f], Max [%f, %f, "
         "%f]",
         v_min.x(), v_min.y(), v_min.z(), v_max.x(), v_max.y(), v_max.z());
@@ -2663,8 +2654,7 @@ bool Rrg::setGlobalBound(planner_msgs::PlanningBound& bound,
     global_bound_.get(v_min, v_max);
     global_space_params_.min_val = v_min;
     global_space_params_.max_val = v_max;
-    ROS_WARN_COND(
-        global_verbosity >= Verbosity::WARN,
+    ROS_WARN_COND(global_verbosity >= Verbosity::WARN, 
         "[GlobalBound] Reset to default: Min [%f, %f, %f], Max [%f, %f, %f]",
         v_min.x(), v_min.y(), v_min.z(), v_max.x(), v_max.y(), v_max.z());
   }
@@ -2691,8 +2681,7 @@ bool Rrg::setGlobalBound(
     Eigen::Vector3d center = 0.5 * (v_max - v_min);
     global_space_params_.setRotation(zero_vector);
     global_space_params_.setCenter(center, false);
-    ROS_WARN_COND(
-        global_verbosity >= Verbosity::WARN,
+    ROS_WARN_COND(global_verbosity >= Verbosity::WARN, 
         "[GlobalBound] Reset to default: Min [%f, %f, %f], Max [%f, %f, %f]",
         v_min.x(), v_min.y(), v_min.z(), v_max.x(), v_max.y(), v_max.z());
   } else {
@@ -2870,8 +2859,7 @@ void Rrg::computeExplorationGain(bool only_leaf_vertices, bool clustering) {
     if (vertex_map[v_id]->vol_gain.is_frontier)
       vertex_map[v_id]->type = VertexType::kFrontier;
   }
-  ROS_INFO_COND(global_verbosity >= Verbosity::INFO, "Num clusters: %d",
-                num_clusters);
+  ROS_INFO_COND(global_verbosity >= Verbosity::INFO, "Num clusters: %d", num_clusters);
   stat_->compute_exp_gain_time = GET_ELAPSED_TIME(tim);
   t2 = std::chrono::high_resolution_clock::now();
   stat_chrono_->compute_exp_gain_time =
@@ -2929,7 +2917,7 @@ void Rrg::computeVolumetricGain(StateVec& state, VolumetricGain& vgain,
     return;
   }
 
-  std::vector<std::tuple<int, int, int>> gain_log;
+  std::vector<std::tuple<int, int, int, int>> gain_log;
   gain_log.clear();
   std::vector<std::pair<Eigen::Vector3d, MapManager::VoxelStatus>> voxel_log;
   voxel_log.clear();
@@ -2969,6 +2957,8 @@ void Rrg::computeVolumetricGain(StateVec& state, VolumetricGain& vgain,
                 ++num_free_voxels;
               } else if (vs == MapManager::VoxelStatus::kOccupied) {
                 ++num_occupied_voxels;
+              } else if (vs == MapManager::VoxelStatus::kDetected) {
+                ++num_detected_voxels;
               }
               if (vis_en) voxel_log.push_back(std::make_pair(voxel, vs));
             }
@@ -2977,7 +2967,7 @@ void Rrg::computeVolumetricGain(StateVec& state, VolumetricGain& vgain,
       }
     }
     gain_log.push_back(std::make_tuple(num_unknown_voxels, num_free_voxels,
-                                       num_occupied_voxels));
+                                       num_occupied_voxels, num_detected_voxels));
   }
 
   // Return gain values.
@@ -2985,12 +2975,17 @@ void Rrg::computeVolumetricGain(StateVec& state, VolumetricGain& vgain,
     int num_unknown_voxels = std::get<0>(gain_log[i]);
     int num_free_voxels = std::get<1>(gain_log[i]);
     int num_occupied_voxels = std::get<2>(gain_log[i]);
+    int num_detected_voxels = std::get<3>(gain_log[i]);
+
     vgain.num_unknown_voxels += num_unknown_voxels;
     vgain.num_free_voxels += num_free_voxels;
     vgain.num_occupied_voxels += num_occupied_voxels;
+    vgain.num_detected_voxels += num_detected_voxels;
+    
     vgain.gain += num_unknown_voxels * planning_params_.unknown_voxel_gain +
                   num_free_voxels * planning_params_.free_voxel_gain +
-                  num_occupied_voxels * planning_params_.occupied_voxel_gain;
+                  num_occupied_voxels * planning_params_.occupied_voxel_gain +
+                  num_detected_voxels * planning_params_.detected_voxel_gain;
   }
 
   // Visualize if required.
@@ -3004,7 +2999,7 @@ void Rrg::computeVolumetricGainRayModel(StateVec& state, VolumetricGain& vgain,
                                         bool vis_en, bool iterative) {
   vgain.reset();
 
-  std::vector<std::tuple<int, int, int, int>> gain_log;
+  std::vector<std::tuple<int, int, int, int, int>> gain_log;
   std::vector<std::pair<Eigen::Vector3d, MapManager::VoxelStatus>> voxel_log;
   int raw_unk_voxels_count = 0;
   // @TODO tung.
@@ -3014,7 +3009,7 @@ void Rrg::computeVolumetricGainRayModel(StateVec& state, VolumetricGain& vgain,
     std::string sensor_name = planning_params_.exp_sensor_list[ind];
 
     Eigen::Vector3d origin(state[0], state[1], state[2]);
-    std::tuple<int, int, int> gain_log_tmp;
+    std::tuple<int, int, int, int> gain_log_tmp;
     std::vector<std::pair<Eigen::Vector3d, MapManager::VoxelStatus>>
         voxel_log_tmp;
     std::vector<Eigen::Vector3d> multiray_endpoints;
@@ -3033,13 +3028,12 @@ void Rrg::computeVolumetricGainRayModel(StateVec& state, VolumetricGain& vgain,
                                 voxel_log_tmp,
                                 sensor_params_.sensor[sensor_name]);
     int num_unknown_voxels = 0, num_free_voxels = 0, num_occupied_voxels = 0,
-        num_unknown_surf_voxels = 0;
+        num_detected_voxels = 0, num_unknown_surf_voxels = 0;
     // num_unknown_voxels = std::get<0>(gain_log_tmp);
     // num_free_voxels = std::get<1>(gain_log_tmp);
     // num_occupied_voxels = std::get<2>(gain_log_tmp);
-    // ROS_INFO_COND(global_verbosity >= Verbosity::INFO, "Total number of
-    // voxels queried: %d", (num_unknown_voxels + num_free_voxels +
-    // num_occupied_voxels)); num_unknown_surf_voxels =
+    // ROS_INFO_COND(global_verbosity >= Verbosity::INFO, "Total number of voxels queried: %d", (num_unknown_voxels +
+    // num_free_voxels + num_occupied_voxels)); num_unknown_surf_voxels =
     // std::get<3>(gain_log_tmp); Have to remove those not belong to the local
     // bound. At the same time check if this is frontier.
 
@@ -3066,9 +3060,10 @@ void Rrg::computeVolumetricGainRayModel(StateVec& state, VolumetricGain& vgain,
             ++num_free_voxels;
           } else if (vs == MapManager::VoxelStatus::kOccupied) {
             ++num_occupied_voxels;
+          } else if (vs == MapManager::VoxelStatus::kDetected){
+            ++num_detected_voxels;
           } else {
-            ROS_ERROR_COND(global_verbosity >= Verbosity::ERROR,
-                           "Unsupported voxel type.");
+            ROS_ERROR_COND(global_verbosity >= Verbosity::ERROR, "Unsupported voxel type.");
           }
           if (vis_en) voxel_log.push_back(std::make_pair(voxel, vs));
         }
@@ -3076,6 +3071,7 @@ void Rrg::computeVolumetricGainRayModel(StateVec& state, VolumetricGain& vgain,
     }
     gain_log.push_back(std::make_tuple(num_unknown_voxels, num_free_voxels,
                                        num_occupied_voxels,
+                                       num_detected_voxels,
                                        num_unknown_surf_voxels));
     if (vis_en) {
       visualization_->visualizeRays(state, multiray_endpoints);
@@ -3093,12 +3089,16 @@ void Rrg::computeVolumetricGainRayModel(StateVec& state, VolumetricGain& vgain,
     int num_unknown_voxels = std::get<0>(gain_log[i]);
     int num_free_voxels = std::get<1>(gain_log[i]);
     int num_occupied_voxels = std::get<2>(gain_log[i]);
+    int num_detected_voxels = std::get<3>(gain_log[i]);
+
     vgain.num_unknown_voxels += num_unknown_voxels;
     vgain.num_free_voxels += num_free_voxels;
     vgain.num_occupied_voxels += num_occupied_voxels;
+    vgain.num_detected_voxels += num_detected_voxels;
     vgain.gain += num_unknown_voxels * planning_params_.unknown_voxel_gain +
                   num_free_voxels * planning_params_.free_voxel_gain +
-                  num_occupied_voxels * planning_params_.occupied_voxel_gain;
+                  num_occupied_voxels * planning_params_.occupied_voxel_gain +
+                  num_detected_voxels * planning_params_.detected_voxel_gain;
   }
 
   // Visualize if required.
@@ -3116,7 +3116,7 @@ void Rrg::computeVolumetricGainRayModelNoBound(StateVec& state,
                                                VolumetricGain& vgain) {
   vgain.reset();
 
-  std::vector<std::tuple<int, int, int>> gain_log;
+  std::vector<std::tuple<int, int, int, int>> gain_log;
   std::vector<std::pair<Eigen::Vector3d, MapManager::VoxelStatus>> voxel_log;
   // @TODO tung.
   // Compute for each sensor in the exploration sensor list.
@@ -3125,7 +3125,7 @@ void Rrg::computeVolumetricGainRayModelNoBound(StateVec& state,
     std::string sensor_name = planning_params_.exp_sensor_list[ind];
 
     Eigen::Vector3d origin(state[0], state[1], state[2]);
-    std::tuple<int, int, int> gain_log_tmp;
+    std::tuple<int, int, int, int> gain_log_tmp;
     std::vector<std::pair<Eigen::Vector3d, MapManager::VoxelStatus>>
         voxel_log_tmp;
     std::vector<Eigen::Vector3d> multiray_endpoints;
@@ -3134,7 +3134,7 @@ void Rrg::computeVolumetricGainRayModelNoBound(StateVec& state,
     map_manager_->getScanStatus(origin, multiray_endpoints, gain_log_tmp,
                                 voxel_log_tmp,
                                 sensor_params_.sensor[sensor_name]);
-    int num_unknown_voxels = 0, num_free_voxels = 0, num_occupied_voxels = 0;
+    int num_unknown_voxels = 0, num_free_voxels = 0, num_occupied_voxels = 0; num_detected_voxels = 0;
     // Have to remove those not belong to the local bound.
     // At the same time check if this is frontier.
 
@@ -3149,14 +3149,15 @@ void Rrg::computeVolumetricGainRayModelNoBound(StateVec& state,
           ++num_free_voxels;
         } else if (vs == MapManager::VoxelStatus::kOccupied) {
           ++num_occupied_voxels;
+        } else if (vs == MapManager::VoxelStatus::kDetected) {
+          ++num_detected_voxels;
         } else {
-          ROS_ERROR_COND(global_verbosity >= Verbosity::ERROR,
-                         "Unsupported voxel type.");
+          ROS_ERROR_COND(global_verbosity >= Verbosity::ERROR, "Unsupported voxel type.");
         }
       }
     }
     gain_log.push_back(std::make_tuple(num_unknown_voxels, num_free_voxels,
-                                       num_occupied_voxels));
+                                       num_occupied_voxels, num_detected_voxels));
     // Check if it is a potential frontier.
     if (sensor_params_.sensor[sensor_name].isFrontier(
             num_unknown_voxels * map_manager_->getResolution())) {
@@ -3169,12 +3170,17 @@ void Rrg::computeVolumetricGainRayModelNoBound(StateVec& state,
     int num_unknown_voxels = std::get<0>(gain_log[i]);
     int num_free_voxels = std::get<1>(gain_log[i]);
     int num_occupied_voxels = std::get<2>(gain_log[i]);
+    int num_detected_voxels = std::get<3>(gain_log[i]);
+
     vgain.num_unknown_voxels += num_unknown_voxels;
     vgain.num_free_voxels += num_free_voxels;
     vgain.num_occupied_voxels += num_occupied_voxels;
+    vgain.num_detected_voxels += num_detected_voxels;
+
     vgain.gain += num_unknown_voxels * planning_params_.unknown_voxel_gain +
                   num_free_voxels * planning_params_.free_voxel_gain +
-                  num_occupied_voxels * planning_params_.occupied_voxel_gain;
+                  num_occupied_voxels * planning_params_.occupied_voxel_gain +
+                  num_detected_voxels * planning_params_.detected_voxel_gain;
   }
 }
 
@@ -3195,17 +3201,13 @@ void Rrg::setRootStateForPlanning(const geometry_msgs::Pose& root_pose) {
 
 bool Rrg::setHomingPos() {
   if (global_graph_->getNumVertices() == 0) {
-    ROS_INFO_COND(
-        global_verbosity >= Verbosity::INFO,
-        "Global graph is empty: add current state as homing position.");
+    ROS_INFO_COND(global_verbosity >= Verbosity::INFO, "Global graph is empty: add current state as homing position.");
     Vertex* g_root_vertex =
         new Vertex(global_graph_->generateVertexID(), current_state_);
     global_graph_->addVertex(g_root_vertex);
     return true;
   } else {
-    ROS_INFO_COND(
-        global_verbosity >= Verbosity::INFO,
-        "Global graph is not empty, can not set current state as homing.");
+    ROS_INFO_COND(global_verbosity >= Verbosity::INFO, "Global graph is not empty, can not set current state as homing.");
     return false;
   }
 }
@@ -3216,9 +3218,7 @@ std::vector<geometry_msgs::Pose> Rrg::searchHomingPath(
   ret_path.clear();
 
   if (global_graph_->getNumVertices() <= 1) {
-    ROS_WARN_COND(
-        global_verbosity >= Verbosity::WARN,
-        "[GlobalGraph] Graph is empty, nothing to search for homing.");
+    ROS_WARN_COND(global_verbosity >= Verbosity::WARN, "[GlobalGraph] Graph is empty, nothing to search for homing.");
     return ret_path;
   }
 
@@ -3264,54 +3264,46 @@ std::vector<geometry_msgs::Pose> Rrg::searchHomingPath(
     expandGraphEdges(global_graph_, new_vertex, rep);
     link_vertex = new_vertex;
   } else {
-    ROS_WARN_COND(global_verbosity >= Verbosity::WARN,
-                  "[GlobalGraph] Try to add current state to the graph.");
+    ROS_WARN_COND(global_verbosity >= Verbosity::WARN, "[GlobalGraph] Try to add current state to the graph.");
     ExpandGraphReport rep;
     expandGraph(global_graph_, cur_state, rep);
     if (rep.status == ExpandGraphStatus::kSuccess) {
-      ROS_WARN_COND(global_verbosity >= Verbosity::WARN,
-                    "[GlobalGraph] Added successfully.");
+      ROS_WARN_COND(global_verbosity >= Verbosity::WARN, "[GlobalGraph] Added successfully.");
       link_vertex = rep.vertex_added;
     } else {
       // Not implemented solution for this case yet.
       // Hopefully this one will not happen if the global planner always adds
       // vertices from odometry --> naive backtracking.
       connect_state_to_graph = false;
-      ROS_WARN_COND(global_verbosity >= Verbosity::WARN,
-                    "[GlobalGraph] Can not add current state to graph since: ");
+      ROS_WARN_COND(global_verbosity >= Verbosity::WARN, "[GlobalGraph] Can not add current state to graph since: ");
       switch (rep.status) {
         case ExpandGraphStatus::kErrorKdTree:
           ROS_WARN_COND(global_verbosity >= Verbosity::DEBUG, "kErrorKdTree.");
           break;
         case ExpandGraphStatus::kErrorCollisionEdge:
-          ROS_WARN_COND(global_verbosity >= Verbosity::DEBUG,
-                        "kErrorCollisionEdge.");
+          ROS_WARN_COND(global_verbosity >= Verbosity::DEBUG, "kErrorCollisionEdge.");
           break;
         case ExpandGraphStatus::kErrorShortEdge:
-          ROS_WARN_COND(global_verbosity >= Verbosity::DEBUG,
-                        "kErrorShortEdge.");
+          ROS_WARN_COND(global_verbosity >= Verbosity::DEBUG, "kErrorShortEdge.");
           break;
         default:
           ROS_WARN_COND(global_verbosity >= Verbosity::DEBUG, "kErrorUnknown.");
           break;
       }
-      ROS_WARN_COND(global_verbosity >= Verbosity::DEBUG,
-                    "[GlobalGraph] Failed to find global path.");
+      ROS_WARN_COND(global_verbosity >= Verbosity::DEBUG, "[GlobalGraph] Failed to find global path.");
     }
   }
 
   if (connect_state_to_graph) {
     if (!global_graph_->findShortestPaths(global_graph_rep_)) {
-      ROS_ERROR_COND(global_verbosity >= Verbosity::ERROR,
-                     "[GlobalGraph] Failed to find shortest path.");
+      ROS_ERROR_COND(global_verbosity >= Verbosity::ERROR, "[GlobalGraph] Failed to find shortest path.");
       return ret_path;
     }
     std::vector<int> homing_path_id;
     global_graph_->getShortestPath(link_vertex->id, global_graph_rep_, false,
                                    homing_path_id);
     if (homing_path_id.empty() || homing_path_id.back() != 0) {
-      ROS_ERROR_COND(global_verbosity >= Verbosity::ERROR,
-                     "[GlobalGraph] Could not find a path to home.");
+      ROS_ERROR_COND(global_verbosity >= Verbosity::ERROR, "[GlobalGraph] Could not find a path to home.");
       return ret_path;
     }
     int homing_path_id_size = homing_path_id.size();
@@ -3363,9 +3355,7 @@ std::vector<geometry_msgs::Pose> Rrg::getGlobalPath(
     geometry_msgs::PoseStamped& waypoint) {
   std::vector<geometry_msgs::Pose> ret_path;
   if (global_graph_->getNumVertices() <= 1) {
-    ROS_WARN_COND(
-        global_verbosity >= Verbosity::WARN,
-        "[GlobalGraph] Graph is empty, nothing to search for homing.");
+    ROS_WARN_COND(global_verbosity >= Verbosity::WARN, "[GlobalGraph] Graph is empty, nothing to search for homing.");
     return ret_path;
   }
 
@@ -3379,8 +3369,7 @@ std::vector<geometry_msgs::Pose> Rrg::getGlobalPath(
 
   Vertex* wp_nearest_vertex;
   if (!global_graph_->getNearestVertex(&wp, &wp_nearest_vertex)) {
-    ROS_WARN_COND(global_verbosity >= Verbosity::WARN,
-                  "Cannot find any nearby vertex to reposition.");
+    ROS_WARN_COND(global_verbosity >= Verbosity::WARN, "Cannot find any nearby vertex to reposition.");
     return ret_path;
   } else if (wp_nearest_vertex == NULL) {
     return ret_path;
@@ -3389,8 +3378,7 @@ std::vector<geometry_msgs::Pose> Rrg::getGlobalPath(
                          wp_nearest_vertex->state.y() - wp.y(),
                          wp_nearest_vertex->state.z() - wp.z());
     if (diff.norm() > max_difference_waypoint_to_graph) {
-      ROS_WARN_COND(
-          global_verbosity >= Verbosity::WARN,
+      ROS_WARN_COND(global_verbosity >= Verbosity::WARN, 
           "Waypoint is too far from the global graph (distance is '%.2f'; max "
           "allowed is '%.2f'). Choose a closer waypoint.",
           diff.norm(), max_difference_waypoint_to_graph);
@@ -3436,58 +3424,49 @@ std::vector<geometry_msgs::Pose> Rrg::getGlobalPath(
     expandGraphEdges(global_graph_, new_vertex, rep);
     link_vertex = new_vertex;
   } else {
-    ROS_WARN_COND(global_verbosity >= Verbosity::WARN,
-                  "[GlobalGraph] Try to add current state to the graph.");
+    ROS_WARN_COND(global_verbosity >= Verbosity::WARN, "[GlobalGraph] Try to add current state to the graph.");
     ExpandGraphReport rep;
     expandGraph(global_graph_, cur_state, rep);
     if (rep.status == ExpandGraphStatus::kSuccess) {
-      ROS_WARN_COND(global_verbosity >= Verbosity::WARN,
-                    "[GlobalGraph] Added successfully.");
+      ROS_WARN_COND(global_verbosity >= Verbosity::WARN, "[GlobalGraph] Added successfully.");
       link_vertex = rep.vertex_added;
     } else {
       // Not implemented solution for this case yet.
       // Hopefully this one will not happen if the global planner always adds
       // vertices from odometry --> naive backtracking.
       connect_state_to_graph = false;
-      ROS_WARN_COND(global_verbosity >= Verbosity::WARN,
-                    "[GlobalGraph] Can not add current state to graph since: ");
+      ROS_WARN_COND(global_verbosity >= Verbosity::WARN, "[GlobalGraph] Can not add current state to graph since: ");
       switch (rep.status) {
         case ExpandGraphStatus::kErrorKdTree:
           ROS_WARN_COND(global_verbosity >= Verbosity::DEBUG, "kErrorKdTree.");
           break;
         case ExpandGraphStatus::kErrorCollisionEdge:
-          ROS_WARN_COND(global_verbosity >= Verbosity::DEBUG,
-                        "kErrorCollisionEdge.");
+          ROS_WARN_COND(global_verbosity >= Verbosity::DEBUG, "kErrorCollisionEdge.");
           break;
         case ExpandGraphStatus::kErrorShortEdge:
-          ROS_WARN_COND(global_verbosity >= Verbosity::DEBUG,
-                        "kErrorShortEdge.");
+          ROS_WARN_COND(global_verbosity >= Verbosity::DEBUG, "kErrorShortEdge.");
           break;
         default:
           ROS_WARN_COND(global_verbosity >= Verbosity::DEBUG, "kErrorUnknown.");
           break;
       }
-      ROS_WARN_COND(global_verbosity >= Verbosity::WARN,
-                    "[GlobalGraph] Failed to find global path.");
+      ROS_WARN_COND(global_verbosity >= Verbosity::WARN, "[GlobalGraph] Failed to find global path.");
     }
   }
 
-  ROS_WARN_COND(global_verbosity >= Verbosity::WARN,
-                "Finding a path from current[%d] to vertex[%d].",
-                link_vertex->id, wp_nearest_vertex->id);
+  ROS_WARN_COND(global_verbosity >= Verbosity::WARN, "Finding a path from current[%d] to vertex[%d].", link_vertex->id,
+           wp_nearest_vertex->id);
 
   if (connect_state_to_graph) {
     if (!global_graph_->findShortestPaths(link_vertex->id, global_graph_rep_)) {
-      ROS_ERROR_COND(global_verbosity >= Verbosity::ERROR,
-                     "[GlobalGraph] Failed to find shortest path.");
+      ROS_ERROR_COND(global_verbosity >= Verbosity::ERROR, "[GlobalGraph] Failed to find shortest path.");
       return ret_path;
     }
     std::vector<int> global_path_id;
     global_graph_->getShortestPath(wp_nearest_vertex->id, global_graph_rep_,
                                    true, global_path_id);
     if (global_path_id.empty()) {
-      ROS_ERROR_COND(global_verbosity >= Verbosity::ERROR,
-                     "[GlobalGraph] Could not find a path to home.");
+      ROS_ERROR_COND(global_verbosity >= Verbosity::ERROR, "[GlobalGraph] Could not find a path to home.");
       return ret_path;
     }
     int global_path_id_size = global_path_id.size();
@@ -3538,8 +3517,7 @@ std::vector<geometry_msgs::Pose> Rrg::getGlobalPath(
       ret_path = mod_path;
     }
     double dmod_time = GET_ELAPSED_TIME(mod_time);
-    ROS_WARN_COND(global_verbosity >= Verbosity::WARN,
-                  "Compute an aternate path for homing in %f(s)", dmod_time);
+    ROS_WARN_COND(global_verbosity >= Verbosity::WARN, "Compute an aternate path for homing in %f(s)", dmod_time);
     visualization_->visualizeModPath(mod_path);
   }
 
@@ -3615,8 +3593,7 @@ std::vector<geometry_msgs::Pose> Rrg::getHomingPath(std::string tgt_frame) {
     }
 
     double dmod_time = GET_ELAPSED_TIME(mod_time);
-    ROS_WARN_COND(global_verbosity >= Verbosity::WARN,
-                  "Compute an aternate path for homing in %f(s)", dmod_time);
+    ROS_WARN_COND(global_verbosity >= Verbosity::WARN, "Compute an aternate path for homing in %f(s)", dmod_time);
     visualization_->visualizeModPath(mod_path);
   }
 
@@ -3740,8 +3717,7 @@ std::vector<geometry_msgs::Pose> Rrg::getBestPath(std::string tgt_frame,
     double time_budget_remaining =
         planning_params_.time_budget_before_landing - time_elapsed;
     if (time_budget_remaining <= 0.0) {
-      ROS_WARN_COND(global_verbosity >= Verbosity::PLANNER_STATUS,
-                    "RAN OUT OF TIME BUDGET --> LANDING.");
+      ROS_WARN_COND(global_verbosity >= Verbosity::PLANNER_STATUS, "RAN OUT OF TIME BUDGET --> LANDING.");
       landing_engaged_ = true;
       std_msgs::Bool stop_msg;
       stop_msg.data = true;
@@ -3768,13 +3744,11 @@ std::vector<geometry_msgs::Pose> Rrg::getBestPath(std::string tgt_frame,
     double time_budget_remaining =
         planning_params_.time_budget_limit - time_elapsed;
     if (time_budget_remaining <= 0.0) {
-      ROS_WARN_COND(global_verbosity >= Verbosity::PLANNER_STATUS,
-                    "RAN OUT OF TIME BUDGET --> STOP HERE.");
+      ROS_WARN_COND(global_verbosity >= Verbosity::PLANNER_STATUS, "RAN OUT OF TIME BUDGET --> STOP HERE.");
       return homing_path;
     }
     if (current_battery_time_remaining_ <= 0.0) {
-      ROS_WARN_COND(global_verbosity >= Verbosity::PLANNER_STATUS,
-                    "RAN OUT OF BATTERY --> STOP HERE.");
+      ROS_WARN_COND(global_verbosity >= Verbosity::PLANNER_STATUS, "RAN OUT OF BATTERY --> STOP HERE.");
       return homing_path;
     }
     // Check two conditions whatever which one comes first.
@@ -3787,14 +3761,12 @@ std::vector<geometry_msgs::Pose> Rrg::getBestPath(std::string tgt_frame,
     if (!homing_path.empty()) {
       double homing_len = Trajectory::getPathLength(homing_path);
       double time_to_home = homing_len / planning_params_.v_homing_max;
-      ROS_INFO_COND(global_verbosity >= Verbosity::INFO,
-                    "Time to home: %f; Time remaining: %f", time_to_home,
-                    time_remaining);
+      ROS_INFO_COND(global_verbosity >= Verbosity::INFO, "Time to home: %f; Time remaining: %f", time_to_home,
+               time_remaining);
 
       const double kTimeDelta = 20;
       if (time_to_home > time_remaining - kTimeDelta) {
-        ROS_WARN_COND(global_verbosity >= Verbosity::PLANNER_STATUS,
-                      "REACHED TIME LIMIT: HOMING ENGAGED.");
+        ROS_WARN_COND(global_verbosity >= Verbosity::PLANNER_STATUS, "REACHED TIME LIMIT: HOMING ENGAGED.");
         if (planning_params_.path_safety_enhance_enable) {
           std::vector<geometry_msgs::Pose> mod_path;
           if (improveFreePath(homing_path, mod_path, true)) {
@@ -3816,8 +3788,7 @@ std::vector<geometry_msgs::Pose> Rrg::getBestPath(std::string tgt_frame,
       }
     } else {
       // @TODO Issue with global graph, cannot find a homing path.
-      ROS_WARN_COND(global_verbosity >= Verbosity::WARN,
-                    "Can not find a path to return home from here.");
+      ROS_WARN_COND(global_verbosity >= Verbosity::WARN, "Can not find a path to return home from here.");
     }
   }
 
@@ -3852,8 +3823,7 @@ std::vector<geometry_msgs::Pose> Rrg::getBestPath(std::string tgt_frame,
   len_min_thres = kLenMinMin;
 
   if (total_len <= len_min_thres) {
-    ROS_WARN_COND(global_verbosity >= Verbosity::WARN,
-                  "Best path is too short.");
+    ROS_WARN_COND(global_verbosity >= Verbosity::WARN, "Best path is too short.");
     return ret;
   }
 
@@ -3877,8 +3847,7 @@ std::vector<geometry_msgs::Pose> Rrg::getBestPath(std::string tgt_frame,
     if ((dir_vec.norm() > 0) &&
         (MapManager::VoxelStatus::kFree !=
          map_manager_->getPathStatus(p_start, p_end, robot_box_size_, true))) {
-      ROS_INFO_COND(global_verbosity >= Verbosity::INFO,
-                    "Segment [%d] is not clear.", i);
+      ROS_INFO_COND(global_verbosity >= Verbosity::INFO, "Segment [%d] is not clear.", i);
     }
 
     tf::Quaternion quat;
@@ -3901,14 +3870,12 @@ std::vector<geometry_msgs::Pose> Rrg::getBestPath(std::string tgt_frame,
     }
     p0 = p1;
   }
-  ROS_INFO_COND(global_verbosity >= Verbosity::INFO,
-                "Best path:  size = %d, length = %f, time = %f",
-                (int)ret.size(), traverse_length, traverse_time);
+  ROS_INFO_COND(global_verbosity >= Verbosity::INFO, "Best path:  size = %d, length = %f, time = %f", (int)ret.size(),
+           traverse_length, traverse_time);
   // Put this into global graph for homing later.
   bool path_added = false;
   if ((int)ret.size() <= 1) {
-    ROS_WARN_COND(global_verbosity >= Verbosity::WARN,
-                  "No ground attached path");
+    ROS_WARN_COND(global_verbosity >= Verbosity::WARN, "No ground attached path");
     return empty_path;
   }
 
@@ -3923,8 +3890,7 @@ std::vector<geometry_msgs::Pose> Rrg::getBestPath(std::string tgt_frame,
       path_added = true;
     }
     double dmod_time = GET_ELAPSED_TIME(mod_time);
-    ROS_WARN_COND(global_verbosity >= Verbosity::WARN,
-                  "Compute an aternate path in %f(s)", dmod_time);
+    ROS_WARN_COND(global_verbosity >= Verbosity::WARN, "Compute an aternate path in %f(s)", dmod_time);
     visualization_->visualizeModPath(mod_path);
   }
 
@@ -3987,8 +3953,7 @@ bool Rrg::improveFreePath(const std::vector<geometry_msgs::Pose>& path_orig,
                               path_mod1[i + 2].position.z);
         Eigen::Vector3d segment = p_int - p_start;
         double segment_len = segment.norm();
-        // ROS_WARN_COND(global_verbosity >= Verbosity::WARN, "Segment length
-        // %f.", segment_len);
+        // ROS_WARN_COND(global_verbosity >= Verbosity::WARN, "Segment length %f.", segment_len);
         if (segment_len < kSegmentLenMin) {
           if ((MapManager::VoxelStatus::kFree ==
                map_manager_->getPathStatus(p_start, p_end, robot_box_size_,
@@ -4001,8 +3966,7 @@ bool Rrg::improveFreePath(const std::vector<geometry_msgs::Pose>& path_orig,
                     Eigen::Vector2d(robot_box_size_[0],
                                     robot_box_size_[1]))))) {
             // ignore the intermidiate nore, combine the first to the last node.
-            ROS_WARN_COND(global_verbosity >= Verbosity::WARN,
-                          "Combine nodes to remove short segments.");
+            ROS_WARN_COND(global_verbosity >= Verbosity::WARN, "Combine nodes to remove short segments.");
             path_mod1.erase(path_mod1.begin() + i + 1);
             cont_refine = true;
             break;
@@ -4152,8 +4116,7 @@ bool Rrg::improveFreePath(const std::vector<geometry_msgs::Pose>& path_orig,
                                                  robot_box_size_[1]))))))) {
         p1_mod = p1;
         mod_success = false;
-        ROS_WARN_COND(global_verbosity >= Verbosity::WARN,
-                      "Newly modified path is not collision-free.");
+        ROS_WARN_COND(global_verbosity >= Verbosity::WARN, "Newly modified path is not collision-free.");
         // break; // break to save time @recheck
       }
     } else {
@@ -4233,19 +4196,15 @@ bool Rrg::addRefPathToGraph(const std::shared_ptr<GraphManager> graph_manager,
     graph_manager->addEdge(new_vertex, nearest_vertex, direction_norm);
     parent_vertex = new_vertex;
   } else {
-    ROS_WARN_COND(global_verbosity >= Verbosity::WARN,
-                  "[GlobalGraph] Try to add current state to the graph.");
+    ROS_WARN_COND(global_verbosity >= Verbosity::WARN, "[GlobalGraph] Try to add current state to the graph.");
     ExpandGraphReport rep;
     Vertex new_vertex(-1, first_state);
     expandGraph(graph_manager, new_vertex, rep);
     if (rep.status == ExpandGraphStatus::kSuccess) {
-      ROS_WARN_COND(global_verbosity >= Verbosity::WARN,
-                    "[GlobalGraph] Added successfully.");
+      ROS_WARN_COND(global_verbosity >= Verbosity::WARN, "[GlobalGraph] Added successfully.");
       parent_vertex = rep.vertex_added;
     } else {
-      ROS_WARN_COND(
-          global_verbosity >= Verbosity::WARN,
-          "[GlobalGraph] Can not add current state to the global graph.");
+      ROS_WARN_COND(global_verbosity >= Verbosity::WARN, "[GlobalGraph] Can not add current state to the global graph.");
       return false;
     }
   }
@@ -4295,16 +4254,13 @@ bool Rrg::addRefPathToGraph(const std::shared_ptr<GraphManager> graph_manager,
     } else {
       switch (rep.status) {
         case ExpandGraphStatus::kErrorKdTree:
-          ROS_WARN_COND(global_verbosity >= Verbosity::WARN,
-                        "Can not add this vertex: kErrorKdTree.");
+          ROS_WARN_COND(global_verbosity >= Verbosity::WARN, "Can not add this vertex: kErrorKdTree.");
           break;
         case ExpandGraphStatus::kErrorCollisionEdge:
-          ROS_WARN_COND(global_verbosity >= Verbosity::WARN,
-                        "Can not add this vertex: kErrorCollisionEdge.");
+          ROS_WARN_COND(global_verbosity >= Verbosity::WARN, "Can not add this vertex: kErrorCollisionEdge.");
           break;
         case ExpandGraphStatus::kErrorShortEdge:
-          ROS_WARN_COND(global_verbosity >= Verbosity::WARN,
-                        "Can not add this vertex: kErrorShortEdge.");
+          ROS_WARN_COND(global_verbosity >= Verbosity::WARN, "Can not add this vertex: kErrorShortEdge.");
           break;
       }
     }
@@ -4392,19 +4348,15 @@ bool Rrg::addRefPathToGraph(const std::shared_ptr<GraphManager> graph_manager,
     graph_manager->addEdge(new_vertex, nearest_vertex, direction_norm);
     parent_vertex = new_vertex;
   } else {
-    ROS_WARN_COND(global_verbosity >= Verbosity::WARN,
-                  "[GlobalGraph] Try to add current state to the graph.");
+    ROS_WARN_COND(global_verbosity >= Verbosity::WARN, "[GlobalGraph] Try to add current state to the graph.");
     ExpandGraphReport rep;
     Vertex new_vertex(-1, first_state);
     expandGraph(graph_manager, new_vertex, rep);
     if (rep.status == ExpandGraphStatus::kSuccess) {
-      ROS_WARN_COND(global_verbosity >= Verbosity::WARN,
-                    "[GlobalGraph] Added successfully.");
+      ROS_WARN_COND(global_verbosity >= Verbosity::WARN, "[GlobalGraph] Added successfully.");
       parent_vertex = rep.vertex_added;
     } else {
-      ROS_WARN_COND(
-          global_verbosity >= Verbosity::WARN,
-          "[GlobalGraph] Can not add current state to the global graph.");
+      ROS_WARN_COND(global_verbosity >= Verbosity::WARN, "[GlobalGraph] Can not add current state to the global graph.");
       return false;
     }
   }
@@ -4450,16 +4402,13 @@ bool Rrg::addRefPathToGraph(const std::shared_ptr<GraphManager> graph_manager,
     } else {
       switch (rep.status) {
         case ExpandGraphStatus::kErrorKdTree:
-          ROS_WARN_COND(global_verbosity >= Verbosity::WARN,
-                        "Can not add this vertex: kErrorKdTree.");
+          ROS_WARN_COND(global_verbosity >= Verbosity::WARN, "Can not add this vertex: kErrorKdTree.");
           break;
         case ExpandGraphStatus::kErrorCollisionEdge:
-          ROS_WARN_COND(global_verbosity >= Verbosity::WARN,
-                        "Can not add this vertex: kErrorCollisionEdge.");
+          ROS_WARN_COND(global_verbosity >= Verbosity::WARN, "Can not add this vertex: kErrorCollisionEdge.");
           break;
         case ExpandGraphStatus::kErrorShortEdge:
-          ROS_WARN_COND(global_verbosity >= Verbosity::WARN,
-                        "Can not add this vertex: kErrorShortEdge.");
+          ROS_WARN_COND(global_verbosity >= Verbosity::WARN, "Can not add this vertex: kErrorShortEdge.");
           break;
       }
     }
@@ -4509,8 +4458,7 @@ void Rrg::setState(StateVec& state) {
   if (!odometry_ready) {
     // First time receive the pose/odometry for planning purpose.
     // Reset the octomap
-    ROS_WARN_COND(global_verbosity >= Verbosity::WARN,
-                  "Received the first odometry, reset the map");
+    ROS_WARN_COND(global_verbosity >= Verbosity::WARN, "Received the first odometry, reset the map");
     map_manager_->resetMap();
   }
   current_state_ = state;
@@ -4538,8 +4486,7 @@ void Rrg::timerCallback(const ros::TimerEvent& event) {
   if (rostime_start_.toSec() == 0) rostime_start_ = ros::Time::now();
 
   if (!odometry_ready) {
-    ROS_WARN_COND(global_verbosity >= Verbosity::WARN,
-                  "Planner is waiting for odometry");
+    ROS_WARN_COND(global_verbosity >= Verbosity::WARN, "Planner is waiting for odometry");
     return;
   }
 
@@ -4559,8 +4506,7 @@ void Rrg::timerCallback(const ros::TimerEvent& event) {
         planning_params_.time_budget_before_landing - time_elapsed;
     if (time_budget_remaining <= 0.0) {
       if (!local_exploration_ongoing_) {
-        ROS_WARN_COND(global_verbosity >= Verbosity::WARN,
-                      "RAN OUT OF TIME BUDGET --> LANDING.");
+        ROS_WARN_COND(global_verbosity >= Verbosity::WARN, "RAN OUT OF TIME BUDGET --> LANDING.");
         landing_engaged_ = true;
         std_msgs::Bool stop_msg;
         stop_msg.data = true;
@@ -4657,9 +4603,8 @@ void Rrg::timerCallback(const ros::TimerEvent& event) {
       ExpandGraphReport rep;
       Vertex new_vertex(-1, new_state);
       expandGraph(global_graph_, new_vertex, rep);
-      // ROS_INFO_COND(global_verbosity >= Verbosity::INFO, "From odometry,
-      // added %d vertices and %d edges", rep.num_vertices_added,
-      // rep.num_edges_added);
+      // ROS_INFO_COND(global_verbosity >= Verbosity::INFO, "From odometry, added %d vertices and %d edges",
+      // rep.num_vertices_added, rep.num_edges_added);
     }
     last_state_marker_ = current_state_;
   }
@@ -4802,9 +4747,8 @@ std::vector<int> Rrg::performShortestPathsClustering(
     }
   }
 
-  ROS_INFO_COND(global_verbosity >= Verbosity::INFO,
-                "Cluster %d paths into %d clusters.", (int)vertices.size(),
-                (int)cluster_paths.size());
+  ROS_INFO_COND(global_verbosity >= Verbosity::INFO, "Cluster %d paths into %d clusters.", (int)vertices.size(),
+           (int)cluster_paths.size());
 
   // Refinement step, remove short path and choose closest cluster.
   if (refinement_enable) {
@@ -4833,9 +4777,8 @@ std::vector<int> Rrg::performShortestPathsClustering(
         }
       }
     }
-    ROS_INFO_COND(global_verbosity >= Verbosity::INFO,
-                  "Clustering with refinement %d paths into %d clusters.",
-                  (int)vertices.size(), (int)cluster_paths_refine.size());
+    ROS_INFO_COND(global_verbosity >= Verbosity::INFO, "Clustering with refinement %d paths into %d clusters.",
+             (int)vertices.size(), (int)cluster_paths_refine.size());
     return cluster_ids_refine;
   } else {
     return cluster_ids;
@@ -4895,31 +4838,26 @@ bool Rrg::connectStateToGraph(std::shared_ptr<GraphManager> graph,
     expandGraphEdges(graph, new_vertex, rep);
     v_added = new_vertex;
   } else {
-    ROS_WARN_COND(global_verbosity >= Verbosity::WARN,
-                  "[GlobalGraph] Try to add current state to the graph.");
+    ROS_WARN_COND(global_verbosity >= Verbosity::WARN, "[GlobalGraph] Try to add current state to the graph.");
     ExpandGraphReport rep;
     Vertex new_vertex(-1, cur_state);
     expandGraph(graph, new_vertex, rep);
     if (rep.status == ExpandGraphStatus::kSuccess) {
-      ROS_WARN_COND(global_verbosity >= Verbosity::WARN,
-                    "[GlobalGraph] Added successfully.");
+      ROS_WARN_COND(global_verbosity >= Verbosity::WARN, "[GlobalGraph] Added successfully.");
       v_added = rep.vertex_added;
     } else {
       // Not implemented solution for this case yet.
       connect_state_to_graph = false;
-      ROS_WARN_COND(global_verbosity >= Verbosity::WARN,
-                    "[GlobalGraph] Can not add current state to graph since: ");
+      ROS_WARN_COND(global_verbosity >= Verbosity::WARN, "[GlobalGraph] Can not add current state to graph since: ");
       switch (rep.status) {
         case ExpandGraphStatus::kErrorKdTree:
           ROS_WARN_COND(global_verbosity >= Verbosity::WARN, "kErrorKdTree.");
           break;
         case ExpandGraphStatus::kErrorCollisionEdge:
-          ROS_WARN_COND(global_verbosity >= Verbosity::WARN,
-                        "kErrorCollisionEdge.");
+          ROS_WARN_COND(global_verbosity >= Verbosity::WARN, "kErrorCollisionEdge.");
           break;
         case ExpandGraphStatus::kErrorShortEdge:
-          ROS_WARN_COND(global_verbosity >= Verbosity::WARN,
-                        "kErrorShortEdge.");
+          ROS_WARN_COND(global_verbosity >= Verbosity::WARN, "kErrorShortEdge.");
           break;
       }
     }
@@ -4949,8 +4887,7 @@ bool Rrg::isRemainingTimeSufficient(const double& time_cost,
   const double kTimeDelta = 20;  // magic number, extra safety
   time_spare = getTimeRemained() - time_cost;
   if (time_spare < kTimeDelta) {
-    ROS_WARN_COND(global_verbosity >= Verbosity::WARN,
-                  "REACHED TIME LIMIT: BE CAREFUL.");
+    ROS_WARN_COND(global_verbosity >= Verbosity::WARN, "REACHED TIME LIMIT: BE CAREFUL.");
     return false;
   }
   return true;
@@ -4969,8 +4906,7 @@ std::vector<geometry_msgs::Pose> Rrg::runGlobalPlanner(int vertex_id,
   // Check if exists any frontier in the global graph
   // Get the list of current frontiers.
   //
-  ROS_INFO_COND(global_verbosity >= Verbosity::PLANNER_STATUS,
-                "Global planner triggered");
+  ROS_INFO_COND(global_verbosity >= Verbosity::PLANNER_STATUS, "Global planner triggered");
   if (vertex_id) {
     ros::Duration(3.0).sleep();  // sleep to unblock the thread to get and
                                  // update all latest pose update.
@@ -4985,8 +4921,7 @@ std::vector<geometry_msgs::Pose> Rrg::runGlobalPlanner(int vertex_id,
 
   // Check if the global planner exists
   if (global_graph_->getNumVertices() <= 1) {
-    ROS_WARN_COND(global_verbosity >= Verbosity::WARN,
-                  "[GlobalGraph] Graph is empty, nothing to search.");
+    ROS_WARN_COND(global_verbosity >= Verbosity::WARN, "[GlobalGraph] Graph is empty, nothing to search.");
     return ret_path;
   }
 
@@ -4994,8 +4929,7 @@ std::vector<geometry_msgs::Pose> Rrg::runGlobalPlanner(int vertex_id,
 
   // Check if the vertex id exists
   if ((vertex_id < 0) || (vertex_id >= global_graph_->getNumVertices())) {
-    ROS_WARN_COND(
-        global_verbosity >= Verbosity::WARN,
+    ROS_WARN_COND(global_verbosity >= Verbosity::WARN, 
         "[GlobalGraph] Vertex ID doesn't exist, plz consider IDs in the range "
         "[0-%d].",
         global_graph_->getNumVertices() - 1);
@@ -5007,8 +4941,7 @@ std::vector<geometry_msgs::Pose> Rrg::runGlobalPlanner(int vertex_id,
   // Check if the time endurance is still available.
   if (!ignore_time) {
     if (getTimeRemained() <= 0.0) {
-      ROS_WARN_COND(global_verbosity >= Verbosity::WARN,
-                    "[Global] RAN OUT OF TIME --> STOP HERE.");
+      ROS_WARN_COND(global_verbosity >= Verbosity::WARN, "[Global] RAN OUT OF TIME --> STOP HERE.");
       return ret_path;
     }
   }
@@ -5031,15 +4964,13 @@ std::vector<geometry_msgs::Pose> Rrg::runGlobalPlanner(int vertex_id,
         global_frontiers.push_back(global_graph_->getVertex(id));
     }
   }
-  ROS_INFO_COND(global_verbosity >= Verbosity::INFO,
-                "Currently have %d frontiers in the global graph.",
-                (int)global_frontiers.size());
+  ROS_INFO_COND(global_verbosity >= Verbosity::INFO, "Currently have %d frontiers in the global graph.",
+           (int)global_frontiers.size());
   if ((!not_check_frontier) && (global_frontiers.size() <= 0)) {
     ROS_INFO_COND(global_verbosity >= Verbosity::INFO, "No frontier exists");
     // Keep exploring or go home if no more frontiers
     if (planning_params_.go_home_if_fully_explored) {
-      ROS_WARN_COND(global_verbosity >= Verbosity::WARN,
-                    " --> Calling HOMING instead.");
+      ROS_WARN_COND(global_verbosity >= Verbosity::WARN, " --> Calling HOMING instead.");
       ret_path = getHomingPath(world_frame_);
       homing_engaged_ = true;
     } else {
@@ -5051,8 +4982,7 @@ std::vector<geometry_msgs::Pose> Rrg::runGlobalPlanner(int vertex_id,
   ROS_WARN_COND(global_verbosity >= Verbosity::WARN, "5");
 
   // Let's try to add current state to the global graph.
-  ROS_WARN_COND(global_verbosity >= Verbosity::WARN,
-                "Trying to add new vertex from current position.");
+  ROS_WARN_COND(global_verbosity >= Verbosity::WARN, "Trying to add new vertex from current position.");
   StateVec cur_state;
   cur_state << current_state_[0], current_state_[1], current_state_[2],
       current_state_[3];
@@ -5064,26 +4994,22 @@ std::vector<geometry_msgs::Pose> Rrg::runGlobalPlanner(int vertex_id,
       connectStateToGraph(global_graph_, cur_state, link_vertex, kRadiusLimit);
 
   if (!connected_to_graph) {
-    ROS_WARN_COND(global_verbosity >= Verbosity::WARN,
-                  "Cannot add the state to the global graph.");
+    ROS_WARN_COND(global_verbosity >= Verbosity::WARN, "Cannot add the state to the global graph.");
     return ret_path;
   }
 
-  ROS_WARN_COND(
-      global_verbosity >= Verbosity::WARN,
+  ROS_WARN_COND(global_verbosity >= Verbosity::WARN, 
       "Added current state to the graph. Start searching for the global path "
       "now.");
   // Get Dijsktra path from home to all.
   if (!global_graph_->findShortestPaths(global_graph_rep_)) {
-    ROS_ERROR_COND(global_verbosity >= Verbosity::ERROR,
-                   "[GlobalGraph] Failed to find shortest path.");
+    ROS_ERROR_COND(global_verbosity >= Verbosity::ERROR, "[GlobalGraph] Failed to find shortest path.");
     return ret_path;
   }
   // Get Dijsktra path from current to all.
   ShortestPathsReport frontier_graph_rep;
   if (!global_graph_->findShortestPaths(link_vertex->id, frontier_graph_rep)) {
-    ROS_ERROR_COND(global_verbosity >= Verbosity::ERROR,
-                   "[GlobalGraph] Failed to find shortest path.");
+    ROS_ERROR_COND(global_verbosity >= Verbosity::ERROR, "[GlobalGraph] Failed to find shortest path.");
     return ret_path;
   }
   // Check if the planner should find the best vertex automatically or manually
@@ -5092,8 +5018,7 @@ std::vector<geometry_msgs::Pose> Rrg::runGlobalPlanner(int vertex_id,
 
   if (vertex_id) {
     // Manual mode
-    ROS_WARN_COND(global_verbosity >= Verbosity::WARN,
-                  "[Global Planner] Manual Mode");
+    ROS_WARN_COND(global_verbosity >= Verbosity::WARN, "[Global Planner] Manual Mode");
     // Just need to check if it is feasible
     std::vector<int> current_to_target_path_id;
     std::vector<int> target_to_home_path_id;
@@ -5115,25 +5040,18 @@ std::vector<geometry_msgs::Pose> Rrg::runGlobalPlanner(int vertex_id,
         target_to_home_distance / planning_params_.v_homing_max;
     double time_cost = 0;
     if (!ignore_time) {
-      ROS_INFO_COND(global_verbosity >= Verbosity::INFO,
-                    "[Global] Time remaining: %f (sec)", time_remaining);
+      ROS_INFO_COND(global_verbosity >= Verbosity::INFO, "[Global] Time remaining: %f (sec)", time_remaining);
       time_cost += time_to_target;
-      ROS_INFO_COND(global_verbosity >= Verbosity::INFO,
-                    "[Global] Time to [%3d]: %f (sec)", vertex_id,
-                    time_to_target);
+      ROS_INFO_COND(global_verbosity >= Verbosity::INFO, "[Global] Time to [%3d]: %f (sec)", vertex_id, time_to_target);
       if (planning_params_.auto_homing_enable) {
         time_cost += time_to_home;
-        ROS_INFO_COND(global_verbosity >= Verbosity::INFO,
-                      "[Global] Time to home  : %f (sec)", time_to_home);
+        ROS_INFO_COND(global_verbosity >= Verbosity::INFO, "[Global] Time to home  : %f (sec)", time_to_home);
       }
     }
     double time_spare = 0;
     if (!isRemainingTimeSufficient(time_cost, time_spare)) {
-      ROS_WARN_COND(global_verbosity >= Verbosity::WARN,
-                    "[Global] Not enough time to go the vertex [%d]",
-                    vertex_id);
-      ROS_WARN_COND(
-          global_verbosity >= Verbosity::WARN,
+      ROS_WARN_COND(global_verbosity >= Verbosity::WARN, "[Global] Not enough time to go the vertex [%d]", vertex_id);
+      ROS_WARN_COND(global_verbosity >= Verbosity::WARN, 
           "[Global] Consider change to another ID or set ignore_time to True");
       return ret_path;
     }
@@ -5141,8 +5059,7 @@ std::vector<geometry_msgs::Pose> Rrg::runGlobalPlanner(int vertex_id,
     best_gain = 1.0;
   } else {
     // Auto mode
-    ROS_WARN_COND(global_verbosity >= Verbosity::WARN,
-                  "[Global Planner] Auto mode");
+    ROS_WARN_COND(global_verbosity >= Verbosity::WARN, "[Global Planner] Auto mode");
     // Get list of feasible frontiers by checking remaining time.
     // Leave the check empty for now since it relate to time budget setting.
     std::vector<Vertex*> feasible_global_frontiers;
@@ -5178,12 +5095,10 @@ std::vector<geometry_msgs::Pose> Rrg::runGlobalPlanner(int vertex_id,
         }
       }
     }
-    ROS_INFO_COND(global_verbosity >= Verbosity::INFO,
-                  "Get %d feasible frontiers from global frontiers.",
-                  (int)feasible_global_frontiers.size());
+    ROS_INFO_COND(global_verbosity >= Verbosity::INFO, "Get %d feasible frontiers from global frontiers.",
+             (int)feasible_global_frontiers.size());
     if (feasible_global_frontiers.size() <= 0) {
-      ROS_INFO_COND(
-          global_verbosity >= Verbosity::INFO,
+      ROS_INFO_COND(global_verbosity >= Verbosity::INFO, 
           "No feasible frontier exists --> Call HOMING instead if fully "
           "explored.");
       return ret_path;
@@ -5240,11 +5155,10 @@ std::vector<geometry_msgs::Pose> Rrg::runGlobalPlanner(int vertex_id,
                 return frontier_exp_gain[a->id] > frontier_exp_gain[b->id];
               });
     // Print out
-    // ROS_WARN_COND(global_verbosity >= Verbosity::WARN, "List of potential
-    // frontier in decreasing order of gain:"); for (int i = 0; i <
-    // feasible_global_frontiers.size(); ++i) {
-    //   ROS_INFO_COND(global_verbosity >= Verbosity::INFO, "ID [%d]: %d with
-    //   gain %f", i, feasible_global_frontiers[i]->id,
+    // ROS_WARN_COND(global_verbosity >= Verbosity::WARN, "List of potential frontier in decreasing order of gain:");
+    // for (int i = 0; i < feasible_global_frontiers.size(); ++i) {
+    //   ROS_INFO_COND(global_verbosity >= Verbosity::INFO, "ID [%d]: %d with gain %f", i,
+    //   feasible_global_frontiers[i]->id,
     //   frontier_exp_gain[feasible_global_frontiers[i]->id]);
     // }
   }
@@ -5252,8 +5166,7 @@ std::vector<geometry_msgs::Pose> Rrg::runGlobalPlanner(int vertex_id,
   std::vector<int> current_to_frontier_path_id;
   std::vector<int> frontier_to_home_path_id;
   if (best_gain >= 0) {
-    ROS_WARN_COND(global_verbosity >= Verbosity::WARN,
-                  "Found the best frontier to go is: %d", best_frontier->id);
+    ROS_WARN_COND(global_verbosity >= Verbosity::WARN, "Found the best frontier to go is: %d", best_frontier->id);
 
     if (auto_global_planner_trig_) {
       current_global_vertex_id_ = best_frontier->id;
@@ -5277,8 +5190,7 @@ std::vector<geometry_msgs::Pose> Rrg::runGlobalPlanner(int vertex_id,
       ret_path.push_back(pose);
     }
   } else {
-    ROS_WARN_COND(
-        global_verbosity >= Verbosity::WARN,
+    ROS_WARN_COND(global_verbosity >= Verbosity::WARN, 
         "Could not find any positive gain (Should not happen) --> Try with "
         "HOMING.");
     return ret_path;
@@ -5310,8 +5222,7 @@ std::vector<geometry_msgs::Pose> Rrg::runGlobalPlanner(int vertex_id,
       ret_path = mod_path;
     }
     double dmod_time = GET_ELAPSED_TIME(mod_time);
-    ROS_WARN_COND(global_verbosity >= Verbosity::WARN,
-                  "Compute an aternate path for homing in %f(s)", dmod_time);
+    ROS_WARN_COND(global_verbosity >= Verbosity::WARN, "Compute an aternate path for homing in %f(s)", dmod_time);
     visualization_->visualizeModPath(mod_path);
   }
 
@@ -5319,8 +5230,7 @@ std::vector<geometry_msgs::Pose> Rrg::runGlobalPlanner(int vertex_id,
       global_graph_, current_to_frontier_path_id, frontier_to_home_path_id);
 
   double dtime = GET_ELAPSED_TIME(ttime);
-  ROS_WARN_COND(global_verbosity >= Verbosity::WARN,
-                "runGlobalPlanner costs: %f (s)", dtime);
+  ROS_WARN_COND(global_verbosity >= Verbosity::WARN, "runGlobalPlanner costs: %f (s)", dtime);
 
   // Path interpolation:
   const double kInterpolationDistance =
@@ -5369,8 +5279,7 @@ void Rrg::addGeofenceAreas(const geometry_msgs::PolygonStamped& polygon_msgs) {
         }
         geofence_manager_->addGeofenceArea(polygon);
       } catch (tf::TransformException ex) {
-        ROS_WARN_COND(
-            global_verbosity >= Verbosity::WARN,
+        ROS_WARN_COND(global_verbosity >= Verbosity::WARN, 
             "Could not look up TF from polygon frame [%s] to the global frame "
             "[%s].",
             polygon_msgs.header.frame_id.c_str(),
@@ -5382,8 +5291,7 @@ void Rrg::addGeofenceAreas(const geometry_msgs::PolygonStamped& polygon_msgs) {
 
 void Rrg::clearUntraversableZones() {
   geofence_manager_.reset(new GeofenceManager());
-  ROS_WARN_COND(global_verbosity >= Verbosity::WARN,
-                "Clear all the traversable polygons.");
+  ROS_WARN_COND(global_verbosity >= Verbosity::WARN, "Clear all the traversable polygons.");
 }
 
 void Rrg::setGlobalFrame(std::string frame_id) {
@@ -5490,8 +5398,7 @@ std::vector<geometry_msgs::Pose> Rrg::searchPathToPassGate() {
 
   // Check if this is allowed.
   if (!darpa_gate_params_.enable) {
-    ROS_WARN_COND(global_verbosity >= Verbosity::WARN,
-                  "Not allow to run search to pass the gate");
+    ROS_WARN_COND(global_verbosity >= Verbosity::WARN, "Not allow to run search to pass the gate");
     return ret_path;
   }
 
@@ -5521,8 +5428,7 @@ std::vector<geometry_msgs::Pose> Rrg::searchPathToPassGate() {
       std::cout << "Darpa gate center: " << gate_center << std::endl;
     } catch (tf::TransformException ex) {
       ROS_ERROR_COND(global_verbosity >= Verbosity::ERROR, "%s", ex.what());
-      ROS_WARN_COND(global_verbosity >= Verbosity::WARN,
-                    "Could not look up TF for gate center.");
+      ROS_WARN_COND(global_verbosity >= Verbosity::WARN, "Could not look up TF for gate center.");
       return ret_path;
     }
   }
@@ -5626,9 +5532,7 @@ std::vector<geometry_msgs::Pose> Rrg::searchPathToPassGate() {
     ret_path.clear();
   }
 
-  if (ret_path.empty())
-    ROS_WARN_COND(global_verbosity >= Verbosity::WARN,
-                  "Could not find path to go through.");
+  if (ret_path.empty()) ROS_WARN_COND(global_verbosity >= Verbosity::WARN, "Could not find path to go through.");
   return ret_path;
 }
 
@@ -5698,5 +5602,127 @@ bool RobotStateHistory::getNearestStateInRange(const StateVec* state,
   if (dist.norm() > range) return false;
   return true;
 }
+
+void Rrg::detectionsCallback(const vision_msgs::Detection2DArrayConstPtr detections_msg,
+                        const sensor_msgs::ImageConstPtr depth_image_msg){
+    
+    // Either no detections or no camera info message received
+    if (detections_msg->detections.empty() || !depth_camera_model.initialized()) return;
+    
+    auto cv_depth_image = std::make_shared<cv::Mat>(depth_image_msg->height, 
+                                                    depth_image_msg->width, 
+                                                    CV_16UC1, 
+                                                    (void*)depth_image_msg->data.data()
+                                                    );
+    std_msgs::Header header_in{detections_msg->header};
+
+    voxblox::Layer<MapManagerVoxbloxVoxel>* sdf_layer_ = map_manager_->getSDFLayer();
+    const float voxel_size = sdf_layer_->voxel_size();
+    const float voxel_size_inv = 1.0 / voxel_size;
+    Eigen::Vector3d view_point(current_state_[0], current_state_[1], current_state_[2]);
+    Eigen::Vector3d end_voxel;
+    double tsdf_dist;
+    vision_msgs::BoundingBox2D bbox_msg;
+    cv::Point2d test;
+
+    for(vision_msgs::Detection2D detection : detections_msg->detections){
+      bbox_msg = detection.bbox;
+      for(vision_msgs::BoundingBox2D bbox : splitBbox(bbox_msg)){
+        cv::Rect roi = to_roi(*cv_depth_image, detection.bbox);
+        // If we try to crop an image using a region of interest that has
+        // width or height equal to zero openCV will throw a runtime error,
+        // avoid this by checking if the area of the region of interest is
+        // greater than zero
+        if (roi.area() < 256) continue;
+
+        Eigen::Vector3d end_point = estimate_position(*cv_depth_image, roi);
+        MapManager::VoxelStatus vs = map_manager_->getRayStatus(
+                                            view_point, end_point,
+                                            true, end_voxel,
+                                            tsdf_dist);
+        voxblox::LongIndex center_voxel_index =
+            voxblox::getGridIndexFromPoint<voxblox::LongIndex>(
+                end_voxel.cast<voxblox::FloatingPoint>(), voxel_size_inv);
+        MapManagerVoxbloxVoxel* voxel =
+            sdf_layer_->getVoxelPtrByGlobalIndex(center_voxel_index);
+
+        voxel->label = static_cast<uint8_t>(detection.results[0].id);
+        voxel->num_observations++;
+
+        std::size_t hash = std::hash<voxblox::LongIndex>()(center_voxel_index);
+        if(voxels_with_detections.count(hash) == 0){
+          voxels_with_detections.insert({hash, end_voxel});
+        }
+        ROS_INFO("Label: %d", voxel->label);
+        ROS_INFO("Num detections: %d", voxel->num_observations);
+      }
+    }
+} // detectionsCallback
+
+
+std::vector<vision_msgs::BoundingBox2D> Rrg::splitBbox(const vision_msgs::BoundingBox2D bbox){
+  int h = bbox.size_x / 2;
+  int w = bbox.size_y / 2;
+  std::vector<vision_msgs::BoundingBox2D> bboxes;
+
+  for(int i : std::vector<int>(-1, 1)){
+    for(int j : std::vector<int>(-1, 1)){
+      vision_msgs::BoundingBox2D new_bbox;
+      geometry_msgs::Pose2D new_center;
+      new_center.x = bbox.center.x + i*h;
+      new_center.y = bbox.center.y + j*w;
+      new_bbox.center = new_center;
+      new_bbox.size_x = h;
+      new_bbox.size_y = w;
+      bboxes.push_back(new_bbox);
+    }
+  }
+  return bboxes;
+} //splitBbox
+
+cv::Rect Rrg::to_roi(const cv::Mat &image, const vision_msgs::BoundingBox2D &bbox){
+    cv::Point tl(
+        boost::algorithm::clamp(static_cast<int>(bbox.center.x - bbox.size_x/2), 0, image.cols-1),
+        boost::algorithm::clamp(static_cast<int>(bbox.center.y - bbox.size_y/2), 0, image.rows-1)
+    );
+
+    cv::Point br(
+        boost::algorithm::clamp(static_cast<int>(bbox.center.x + bbox.size_x/2), tl.x, image.cols-1),
+        boost::algorithm::clamp(static_cast<int>(bbox.center.y + bbox.size_y/2), tl.y, image.rows-1)
+    );
+
+    cv::Rect roi(
+        tl.x,
+        tl.y,
+        br.x - tl.x,
+        br.y - tl.y
+    );
+
+    return roi;
+}
+
+Eigen::Vector3d Rrg::estimate_position(const cv::Mat &depth_image,
+                                   const cv::Rect roi
+                                  ) const{
+    cv::Mat cropped_image{roi.height, roi.width, CV_16UC1, cv::Scalar{0}};
+    depth_image(roi).copyTo(cropped_image);
+    cv::Mat mask;
+    cropped_image.convertTo(mask, CV_8UC1);
+
+    cv::Point2d main_pixel(roi.x + roi.width/2, roi.y + roi.height/2);
+    cv::Scalar distance, std_dev;
+    cv::meanStdDev(depth_image, distance, std_dev, mask);
+    
+    cv::Point3d position_cv = depth_camera_model.projectPixelTo3dRay(main_pixel) * (distance[0] / 1000);
+    Eigen::Vector3d position(position_cv.x, position_cv.y, position_cv.z);
+    return position;
+}
+
+
+void Rrg::depthCameraInfoCallback(sensor_msgs::CameraInfoConstPtr depth_camera_info_msg)
+{
+    depth_camera_model.fromCameraInfo(depth_camera_info_msg);
+} // Depth camera info callback
+                  
 
 }  // namespace explorer

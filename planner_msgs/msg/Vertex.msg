@@ -5,4 +5,5 @@ geometry_msgs/Pose pose
 int32 num_unknown_voxels
 int32 num_occupied_voxels
 int32 num_free_voxels
+int32 num_detected_voxels
 bool is_frontier

@@ -8,10 +8,16 @@
 #include <numeric>
 #include <unordered_map>
 
+#include <boost/algorithm/clamp.hpp>
 #include <eigen3/Eigen/Dense>
 #include <geometry_msgs/PointStamped.h>
 #include <geometry_msgs/Polygon.h>
 #include <geometry_msgs/PolygonStamped.h>
+#include <geometry_msgs/PoseWithCovarianceStamped.h>
+#include <geometry_msgs/Pose2D.h>
+#include <vision_msgs/Detection2DArray.h>
+#include <vision_msgs/Detection2D.h>
+#include <vision_msgs/BoundingBox2D.h>
 #include <kdtree/kdtree.h>
 #include <pcl/common/distances.h>
 #include <pcl/filters/crop_box.h>
@@ -29,6 +35,11 @@
 #include <std_srvs/Trigger.h>
 #include <tf/transform_datatypes.h>
 #include <tf/transform_listener.h>
+#include <message_filters/subscriber.h>
+#include <message_filters/synchronizer.h>
+#include <message_filters/sync_policies/exact_time.h>
+#include <message_filters/sync_policies/approximate_time.h>
+#include <image_geometry/pinhole_camera_model.h>
 
 #include "adaptive_obb/adaptive_obb.h"
 #include "gbplanner/gbplanner_rviz.h"
@@ -51,6 +62,8 @@
 #define FULL_PLANNER_VIZ 1
 
 static const double max_difference_waypoint_to_graph = 15.0;
+
+typedef message_filters::sync_policies::ApproximateTime<vision_msgs::Detection2DArray, sensor_msgs::Image> DepthDetectionSyncPolicy;
 
 namespace explorer {
 
@@ -93,6 +106,14 @@ class Rrg {
 
   // Clear out old vertices from previous session.
   void clear();
+
+  void detectionsCallback(const vision_msgs::Detection2DArrayConstPtr detections_msg,
+                                  const sensor_msgs::ImageConstPtr depth_image_msg);
+
+  void depthCameraInfoCallback(sensor_msgs::CameraInfoConstPtr depth_camera_info_msg);
+
+
+  std::vector<vision_msgs::BoundingBox2D> splitBbox(const vision_msgs::BoundingBox2D bbox);
 
   // Sample points and construct a graph.
   GraphStatus buildGraph();
@@ -227,11 +248,9 @@ class Rrg {
   void setPlannerTriggerMode(PlannerTriggerModeType& trig_mode) {
     planner_trigger_mode_ = trig_mode;
     if (planner_trigger_mode_ == PlannerTriggerModeType::kAuto) {
-      ROS_WARN_COND(global_verbosity >= Verbosity::WARN,
-                    "Planner Trigger Mode set to kAuto.");
+      ROS_WARN_COND(global_verbosity >= Verbosity::WARN, "Planner Trigger Mode set to kAuto.");
     } else if (planner_trigger_mode_ == PlannerTriggerModeType::kManual) {
-      ROS_WARN_COND(global_verbosity >= Verbosity::WARN,
-                    "Planner Trigger Mode set to kManual.");
+      ROS_WARN_COND(global_verbosity >= Verbosity::WARN, "Planner Trigger Mode set to kManual.");
     }
   }
 
@@ -260,8 +279,15 @@ class Rrg {
   void computeVolumetricGainRayModelNoBound(StateVec& state,
                                             VolumetricGain& vgain);
 
+
   void evaluateShortestPaths();
 
+  cv::Rect to_roi(const cv::Mat &image, 
+                       const vision_msgs::BoundingBox2D &bbox);
+
+
+  Eigen::Vector3d estimate_position(const cv::Mat &depth_image,
+                                             const cv::Rect roi) const;
   // Add frontiers from the local graph to the global graph
   void addFrontiers(int best_vertex_id);
 
@@ -280,6 +306,14 @@ class Rrg {
 
   ros::Subscriber semantics_subscriber_;
   ros::Subscriber stop_srv_subscriber_;
+  ros::Subscriber bounded_box_subscriber_;
+
+  image_geometry::PinholeCameraModel depth_camera_model;
+
+  std::unique_ptr<ros::Subscriber> depth_camera_info_subscriber_;
+  std::unique_ptr<message_filters::Subscriber<vision_msgs::Detection2DArray> > detections_subscriber_;
+  std::unique_ptr<message_filters::Subscriber<sensor_msgs::Image> > depth_image_subscriber_;
+  std::unique_ptr<message_filters::Synchronizer<DepthDetectionSyncPolicy> > sync_;
 
   ros::ServiceClient pci_homing_;
   ros::ServiceClient landing_srv_client_;
@@ -293,6 +327,8 @@ class Rrg {
   std::shared_ptr<GraphManager> global_graph_;
   ShortestPathsReport global_graph_rep_;  // shortest path to root vertex
   std::vector<std::vector<double>> edge_inclinations_;
+
+  std::map<std::size_t, Eigen::Vector3d> voxels_with_detections;
 
   // Add a collision-free path to the graph.
   bool addRefPathToGraph(const std::shared_ptr<GraphManager> graph_manager,

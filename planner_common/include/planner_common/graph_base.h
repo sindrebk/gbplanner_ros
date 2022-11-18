@@ -67,6 +67,7 @@ struct VolumetricGain {
         num_unknown_voxels(0),
         num_free_voxels(0),
         num_occupied_voxels(0),
+        num_detected_voxels(0),
         num_unknown_surf_voxels(0) {}
 
   void reset() {
@@ -75,6 +76,7 @@ struct VolumetricGain {
     num_unknown_voxels = 0;
     num_free_voxels = 0;
     num_occupied_voxels = 0;
+    num_detected_voxels = 0;
     num_unknown_surf_voxels = 0;
     is_frontier = false;
     unseen_voxel_hash_keys.clear();
@@ -85,6 +87,7 @@ struct VolumetricGain {
   int num_unknown_voxels;
   int num_free_voxels;
   int num_occupied_voxels;
+  int num_detected_voxels;
   int num_unknown_surf_voxels;
   std::vector<std::size_t> unseen_voxel_hash_keys;
 
@@ -92,7 +95,8 @@ struct VolumetricGain {
 
   void printGain() {
     std::cout << "Gains: " << gain << ", " << num_unknown_voxels << ", "
-              << num_occupied_voxels << ", " << num_free_voxels << std::endl;
+              << num_occupied_voxels << ", " << num_free_voxels << ", " 
+              << num_detected_voxels <<std::endl;
   }
 };
 
@@ -281,6 +285,7 @@ struct Serializer<VolumetricGain> {
     stream.next(m.num_unknown_voxels);
     stream.next(m.num_free_voxels);
     stream.next(m.num_occupied_voxels);
+    stream.next(m.num_detected_voxels);
     stream.next(m.is_frontier);
   }
 

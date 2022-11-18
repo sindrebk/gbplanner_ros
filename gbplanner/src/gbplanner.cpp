@@ -22,8 +22,7 @@ Gbplanner::Gbplanner(const ros::NodeHandle& nh,
                      const ros::NodeHandle& nh_private,
                      MapManagerVoxblox<MapManagerVoxbloxServer,
                                        MapManagerVoxbloxVoxel>* map_manager)
-    : nh_(nh), nh_private_(nh_private) {
-  
+    : nh_(nh), nh_private_(nh_private){
   planner_status_ = Gbplanner::PlannerStatus::NOT_READY;
   rrg_ = new Rrg(nh, nh_private, map_manager);
 
@@ -83,6 +82,8 @@ void Gbplanner::initializeAttributes() {
   untraversable_polygon_subscriber_ =
       nh_.subscribe("/traversability_estimation/untraversable_polygon", 100,
                     &Gbplanner::untraversablePolygonCallback, this);
+
+
 }
 
 bool Gbplanner::plannerGotoWaypointCallback(
