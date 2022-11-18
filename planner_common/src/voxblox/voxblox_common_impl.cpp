@@ -117,6 +117,27 @@ MapManagerVoxblox<SDFServerType, SDFVoxelType>::getVoxelStatus(
   SDFVoxelType* voxel = sdf_layer_->getVoxelPtrByCoordinates(
       position.cast<voxblox::FloatingPoint>());
 
+
+  Eigen::Vector3d box_pos;
+  box_pos.x() = 10;
+  box_pos.y() = 10;
+  box_pos.z() = 2;
+
+  Eigen::Vector3d box_size;
+  box_size.x() = 50;
+  box_size.y() = 50;
+  box_size.z() = 50;
+
+  Eigen::Vector3d difference;
+  difference.x() = position.x()-box_pos.x();
+  difference.y() = position.y()-box_pos.y();
+  difference.z() = position.z()-box_pos.z();
+
+  if((abs(difference.x()) >= box_size.x()) || (abs(difference.y()) >= box_size.y()) || (abs(difference.z()) >= box_size.z())){
+    return VoxelStatus::kDetected;
+  }
+
+
   if (checkUnknownStatus(voxel)) {
     return VoxelStatus::kUnknown;
   }
